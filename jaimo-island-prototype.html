@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <title>Jaimo Island — macOS 个人工具站原型</title>
+  <title>Jaimo Flow — macOS 个人工具站原型</title>
   <style>
     :root {
       color-scheme: dark;
@@ -605,7 +605,7 @@
   <div class="wallpaper-shape shape-a"></div>
   <div class="wallpaper-shape shape-b"></div>
 
-  <section class="island-shell compact" id="island" aria-label="Jaimo Island">
+  <section class="island-shell compact" id="island" aria-label="Jaimo Flow">
     <div class="compact-view">
       <div class="brand-orb" aria-hidden="true">J</div>
       <div class="compact-copy">
@@ -623,7 +623,7 @@
       <header class="topbar">
         <div class="top-brand">
           <div class="brand-orb" aria-hidden="true">J</div>
-          <div class="top-brand-copy"><strong>Jaimo</strong><span>个人工具站</span></div>
+          <div class="top-brand-copy"><strong>Jaimo Flow</strong><span>个人工具站</span></div>
         </div>
         <nav class="primary-nav" aria-label="一级导航">
           <button class="nav-button active" data-page="home"><svg class="icon"><use href="#i-home"/></svg><span>首页</span></button>
@@ -640,7 +640,7 @@
       <main class="workspace">
         <section class="page active" data-page-panel="home">
           <div class="page-toolbar">
-            <div class="page-title"><div class="eyebrow">今天也是高效的一天</div><h1 id="greeting">上午好，Jaimo</h1></div>
+            <div class="page-title"><div class="eyebrow">今天也是高效的一天</div><h1 id="greeting">上午好，Jaimo Flow</h1></div>
             <div class="toolbar-actions">
               <button class="button" id="customizeWidgets"><svg class="icon sm"><use href="#i-edit"/></svg><span>管理组件</span></button>
             </div>
@@ -748,7 +748,7 @@
     </div>
   </section>
 
-  <div class="desktop-hint"><span class="keycap">⌥ Space</span><span>唤起 / 收起 Jaimo</span></div>
+  <div class="desktop-hint"><span class="keycap">⌥ Space</span><span>唤起 / 收起 Jaimo Flow</span></div>
 
   <div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="modal-card">
@@ -756,7 +756,7 @@
       <div class="settings-body">
         <div class="settings-label">通用</div>
         <div class="settings-group">
-          <div class="setting-row"><div class="setting-copy"><strong>开机自动启动</strong><span>登录 Mac 后在后台启动 Jaimo</span></div><button class="switch on" role="switch" aria-checked="true" aria-label="开机自动启动"></button></div>
+          <div class="setting-row"><div class="setting-copy"><strong>开机自动启动</strong><span>登录 Mac 后在后台启动 Jaimo Flow</span></div><button class="switch on" role="switch" aria-checked="true" aria-label="开机自动启动"></button></div>
           <div class="setting-row"><div class="setting-copy"><strong>唤起快捷键</strong><span>在任意应用中唤起灵动岛</span></div><span class="keycap">⌥ Space</span></div>
           <div class="setting-row"><div class="setting-copy"><strong>复制后收起</strong><span>从剪切板或提示词复制后自动收起</span></div><button class="switch on" id="autoCollapseSwitch" role="switch" aria-checked="true" aria-label="复制后收起"></button></div>
         </div>
@@ -837,8 +837,8 @@
       { id: 1, kind: "text", label: "文字", title: "灵动岛的核心不是形状，而是从状态到任务的连续性。", source: "Notion", time: "2 分钟前", favorite: true, body: "灵动岛的核心不是形状，而是从状态到任务的连续性。\n\n紧凑状态只提供当前上下文和高频操作，复杂内容应当在用户主动展开后出现。" },
       { id: 2, kind: "link", label: "链接", title: "https://developer.apple.com/design/human-interface-guidelines/", source: "Safari", time: "8 分钟前", favorite: false, body: "https://developer.apple.com/design/human-interface-guidelines/" },
       { id: 3, kind: "code", label: "代码", title: "enum IslandState { case hidden, compact, expanded }", source: "Xcode", time: "14 分钟前", favorite: false, body: "enum IslandState {\n    case hidden\n    case compact\n    case expanded(destination: ToolDestination)\n}" },
-      { id: 4, kind: "image", label: "图片", title: "Jaimo 首页组件布局草图.png", source: "Figma", time: "23 分钟前", favorite: true, body: "1920 × 1200 PNG 图片\n本地路径：~/Library/Application Support/ClipFlow/Images/" },
-      { id: 5, kind: "text", label: "文字", title: "应用页：左侧收藏，右侧全部应用，支持本地搜索。", source: "Jaimo", time: "31 分钟前", favorite: false, body: "应用页：\n· 左侧收藏 / 常用\n· 右侧全部应用\n· 支持本地搜索\n· 双击或回车启动" }
+      { id: 4, kind: "image", label: "图片", title: "Jaimo Flow 首页组件布局草图.png", source: "Figma", time: "23 分钟前", favorite: true, body: "1920 × 1200 PNG 图片\n本地路径：~/Library/Application Support/ClipFlow/Images/" },
+      { id: 5, kind: "text", label: "文字", title: "应用页：左侧收藏，右侧全部应用，支持本地搜索。", source: "Jaimo Flow", time: "31 分钟前", favorite: false, body: "应用页：\n· 左侧收藏 / 常用\n· 右侧全部应用\n· 支持本地搜索\n· 双击或回车启动" }
     ];
 
     let promptSelection = 1;
@@ -881,7 +881,7 @@
       $("#homeDate").textContent = full;
       $("#menuClock").textContent = menu;
       const hour = now.getHours();
-      $("#greeting").textContent = `${hour < 6 ? "夜深了" : hour < 12 ? "上午好" : hour < 18 ? "下午好" : "晚上好"}，Jaimo`;
+      $("#greeting").textContent = `${hour < 6 ? "夜深了" : hour < 12 ? "上午好" : hour < 18 ? "下午好" : "晚上好"}，Jaimo Flow`;
     }
 
     function appIcon(app) { return `<div class="mini-app" style="background:${app.color}">${escapeHTML(app.symbol)}</div>`; }

@@ -135,7 +135,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
             formatter.locale = Locale(identifier: "zh_CN")
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss-SSS"
             let url = directory
-                .appendingPathComponent("Jaimo 录音 \(formatter.string(from: Date()))")
+                .appendingPathComponent("Jaimo Flow 录音 \(formatter.string(from: Date()))")
                 .appendingPathExtension("m4a")
 
             let settings: [String: Any] = [

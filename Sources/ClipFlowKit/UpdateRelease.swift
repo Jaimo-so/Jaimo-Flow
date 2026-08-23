@@ -89,7 +89,7 @@ public struct GitHubReleasePayload: Decodable, Hashable, Sendable {
             : tagName
         return AvailableUpdate(
             version: displayVersion,
-            releaseName: name ?? "Jaimo clip \(displayVersion)",
+            releaseName: name ?? "Jaimo Flow \(displayVersion)",
             releaseNotes: body ?? "",
             releasePageURL: htmlURL,
             installerName: installer.name,

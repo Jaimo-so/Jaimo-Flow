@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/Jaimo clip.app"
+APP_DIR="$BUILD_DIR/Jaimo Flow.app"
 ARM_MODULE_CACHE="$PROJECT_DIR/.build/module-cache-arm64"
 ARM_BINARY="$PROJECT_DIR/.build/arm64-apple-macosx/release/ClipFlow"
 UPDATER_BINARY="$PROJECT_DIR/.build/arm64-apple-macosx/release/ClipFlowUpdater"
@@ -22,7 +22,7 @@ swift build \
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$APP_DIR/Contents/Helpers"
-cp "$ARM_BINARY" "$APP_DIR/Contents/MacOS/Jaimo clip"
+cp "$ARM_BINARY" "$APP_DIR/Contents/MacOS/Jaimo Flow"
 cp "$UPDATER_BINARY" "$APP_DIR/Contents/Helpers/ClipFlowUpdater"
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
@@ -46,5 +46,5 @@ else
 fi
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DIR"
-/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/Jaimo clip"
+/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/Jaimo Flow"
 echo "$APP_DIR"

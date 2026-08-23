@@ -163,13 +163,13 @@ do {
     let releaseJSON = """
     {
       "tag_name": "v0.1.2",
-      "name": "Jaimo clip 0.1.2",
+      "name": "Jaimo Flow 0.1.2",
       "body": "修复与优化",
-      "html_url": "https://github.com/Jaimo-so/Jaimo-clip/releases/tag/v0.1.2",
+      "html_url": "https://github.com/Jaimo-so/Jaimo-Flow/releases/tag/v0.1.2",
       "assets": [
         {
-          "name": "Jaimo-clip-0.1.2-macOS-Apple-Silicon.dmg",
-          "browser_download_url": "https://github.com/Jaimo-so/Jaimo-clip/releases/download/v0.1.2/Jaimo-clip-0.1.2-macOS-Apple-Silicon.dmg",
+          "name": "Jaimo-Flow-0.1.2-macOS-Apple-Silicon.dmg",
+          "browser_download_url": "https://github.com/Jaimo-so/Jaimo-Flow/releases/download/v0.1.2/Jaimo-Flow-0.1.2-macOS-Apple-Silicon.dmg",
           "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
       ]
@@ -187,8 +187,8 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo clip self-test passed: 29 checks")
+    print("Jaimo Flow self-test passed: 29 checks")
 } catch {
-    fputs("Jaimo clip self-test failed: \(error)\n", stderr)
+    fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)
 }

@@ -128,7 +128,7 @@ struct IslandRootView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("展开 Jaimo 工具站")
+            .accessibilityLabel("展开 Jaimo Flow 工具站")
             .help("展开工具站")
 
             Spacer(minLength: 0)
@@ -179,7 +179,7 @@ struct IslandRootView: View {
                     IslandBrandMark(size: 30)
                     if proxy.size.width >= 720 {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("Jaimo")
+                            Text("Jaimo Flow")
                                 .font(.system(size: 13, weight: .semibold))
                             Text("个人工具站")
                                 .font(.system(size: 9.5))
@@ -248,8 +248,8 @@ struct IslandRootView: View {
                             .frame(width: 34, height: 34)
                     }
                     .buttonStyle(IslandIconButtonStyle())
-                    .accessibilityLabel("隐藏 Jaimo")
-                    .help("隐藏 Jaimo")
+                    .accessibilityLabel("隐藏 Jaimo Flow")
+                    .help("隐藏 Jaimo Flow")
                 }
             }
             .padding(.horizontal, 14)

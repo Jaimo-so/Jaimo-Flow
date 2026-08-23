@@ -40,7 +40,7 @@ final class UpdateManager: ObservableObject {
         repositoryOwner = bundle.object(forInfoDictionaryKey: "ClipFlowUpdateRepositoryOwner") as? String
             ?? "Jaimo-so"
         repositoryName = bundle.object(forInfoDictionaryKey: "ClipFlowUpdateRepositoryName") as? String
-            ?? "Jaimo-clip"
+            ?? "Jaimo-Flow"
         repositoryLabel = "\(repositoryOwner)/\(repositoryName)"
         self.defaults = defaults
         if let helperFailure = Self.consumeHelperFailure() {
@@ -150,7 +150,7 @@ final class UpdateManager: ObservableObject {
         let destinationParent = currentApplication.deletingLastPathComponent()
         guard currentApplication.pathExtension == "app",
               FileManager.default.isWritableFile(atPath: destinationParent.path) else {
-            state = .failed("请先将 Jaimo clip 拖入“应用程序”文件夹，再执行一键更新")
+            state = .failed("请先将 Jaimo Flow 拖入“应用程序”文件夹，再执行一键更新")
             return
         }
 
@@ -231,7 +231,7 @@ private extension UpdateManager {
             case .checksumUnavailable: return "安装包缺少 SHA-256 校验信息"
             case .checksumMismatch: return "安装包校验失败，已停止安装"
             case .invalidDiskImage: return "无法打开下载的安装镜像"
-            case .applicationMissing: return "安装镜像中没有找到 Jaimo clip.app"
+            case .applicationMissing: return "安装镜像中没有找到 Jaimo Flow.app"
             case .invalidApplication: return "下载的应用标识不正确"
             case .versionMismatch: return "下载的应用版本与发布版本不一致"
             case .unsupportedArchitecture: return "下载的应用不是 Apple Silicon 版本"
@@ -258,7 +258,7 @@ private extension UpdateManager {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2026-03-10", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("Jaimo-clip/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Jaimo-Flow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTPResponse(response)
@@ -276,7 +276,7 @@ private extension UpdateManager {
         var request = URLRequest(url: checksumURL)
         request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Jaimo-clip/\(update.version)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Jaimo-Flow/\(update.version)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTPResponse(response)
         guard let text = String(data: data, encoding: .utf8) else {
@@ -299,7 +299,7 @@ private extension UpdateManager {
         var request = URLRequest(url: update.installerURL)
         request.timeoutInterval = 120
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Jaimo-clip/\(update.version)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Jaimo-Flow/\(update.version)", forHTTPHeaderField: "User-Agent")
         let (temporaryURL, response) = try await URLSession.shared.download(for: request)
         try validateHTTPResponse(response)
 
@@ -331,7 +331,7 @@ private extension UpdateManager {
         let mountPoint = try mountDiskImage(installerURL)
         defer { try? run("/usr/bin/hdiutil", ["detach", mountPoint.path]) }
 
-        let candidateNames = ["Jaimo clip.app", "ClipFlow.app"]
+        let candidateNames = ["Jaimo Flow.app", "Jaimo clip.app", "ClipFlow.app"]
         guard let candidate = candidateNames
             .map({ mountPoint.appendingPathComponent($0, isDirectory: true) })
             .first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
@@ -524,7 +524,7 @@ private extension UpdateManager {
     }
 
     nonisolated static func consumeHelperFailure() -> String? {
-        let url = URL(fileURLWithPath: "/tmp/Jaimo-clip-update-error.log")
+        let url = URL(fileURLWithPath: "/tmp/Jaimo-Flow-update-error.log")
         guard let data = try? Data(contentsOf: url),
               let contents = String(data: data, encoding: .utf8) else {
             return nil

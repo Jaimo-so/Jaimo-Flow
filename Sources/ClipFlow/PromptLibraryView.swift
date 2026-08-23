@@ -497,7 +497,7 @@ struct PromptEditorView: View {
                                 .onChange(of: model.promptDraftBody) { _ in model.syncDraftVariables() }
                         }
 
-                        Text("使用 {{变量名}} 插入变量。调用提示词时，Jaimo clip 会要求填写变量，再生成最终文本。")
+                        Text("使用 {{变量名}} 插入变量。调用提示词时，Jaimo Flow 会要求填写变量，再生成最终文本。")
                             .font(.system(size: 11.5))
                             .foregroundStyle(theme.muted)
                             .fixedSize(horizontal: false, vertical: true)

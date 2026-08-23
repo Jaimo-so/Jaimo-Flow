@@ -15,7 +15,7 @@ enum UpdaterError: Error, LocalizedError {
         case .invalidPath: return "更新路径无效"
         case .invalidApplication: return "待安装应用验证失败"
         case .destinationNotWritable: return "应用所在文件夹不可写"
-        case .applicationDidNotExit: return "Jaimo clip 未能及时退出"
+        case .applicationDidNotExit: return "Jaimo Flow 未能及时退出"
         case .commandFailed(let command): return "命令执行失败：\(command)"
         }
     }
@@ -71,8 +71,8 @@ func launch(_ application: URL) {
 }
 
 func writeFailureLog(_ error: Error) {
-    let message = "\(Date()) Jaimo clip update failed: \(error.localizedDescription)\n"
-    let url = URL(fileURLWithPath: "/tmp/Jaimo-clip-update-error.log")
+    let message = "\(Date()) Jaimo Flow update failed: \(error.localizedDescription)\n"
+    let url = URL(fileURLWithPath: "/tmp/Jaimo-Flow-update-error.log")
     guard let data = message.data(using: .utf8) else { return }
     if FileManager.default.fileExists(atPath: url.path),
        let handle = try? FileHandle(forWritingTo: url) {
@@ -115,7 +115,7 @@ func performUpdate(_ options: UpdaterOptions) throws {
     }
 
     let backup = destinationParent.appendingPathComponent(
-        ".Jaimo-clip-backup-\(UUID().uuidString).app",
+        ".Jaimo-Flow-backup-\(UUID().uuidString).app",
         isDirectory: true
     )
     try fileManager.moveItem(at: options.destination, to: backup)

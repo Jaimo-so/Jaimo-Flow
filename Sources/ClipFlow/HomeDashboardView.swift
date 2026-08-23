@@ -279,10 +279,10 @@ struct HomeDashboardView: View {
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
-        if hour < 6 { return "夜深了，Jaimo" }
-        if hour < 12 { return "上午好，Jaimo" }
-        if hour < 18 { return "下午好，Jaimo" }
-        return "晚上好，Jaimo"
+        if hour < 6 { return "夜深了，Jaimo Flow" }
+        if hour < 12 { return "上午好，Jaimo Flow" }
+        if hour < 18 { return "下午好，Jaimo Flow" }
+        return "晚上好，Jaimo Flow"
     }
 
     private func restoreBar(_ theme: ClipFlowTheme) -> some View {
@@ -428,7 +428,7 @@ struct HomeDashboardView: View {
         case .recentApplications:
             IslandWidgetCard(
                 title: widget.title,
-                subtitle: "从 Jaimo 启动的本机应用",
+                subtitle: "从 Jaimo Flow 启动的本机应用",
                 widget: widget,
                 editing: editingWidgets,
                 model: model

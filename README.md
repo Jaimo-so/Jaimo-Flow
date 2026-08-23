@@ -1,29 +1,29 @@
 <p align="center">
-  <img src="Resources/AppLogo.png" width="144" alt="Jaimo clip Logo">
+  <img src="Resources/AppLogo.png" width="144" alt="Jaimo Flow Logo">
 </p>
 
-<h1 align="center">Jaimo clip</h1>
+<h1 align="center">Jaimo Flow</h1>
 
 <p align="center">
   原生、本地优先的 macOS 个人工具站
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jaimo-so/Jaimo-clip/releases/latest"><img src="https://img.shields.io/github/v/release/Jaimo-so/Jaimo-clip?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/Jaimo-so/Jaimo-Flow/releases/latest"><img src="https://img.shields.io/github/v/release/Jaimo-so/Jaimo-Flow?display_name=tag&sort=semver" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-111111?logo=apple" alt="macOS 13 or later">
   <img src="https://img.shields.io/badge/Apple%20Silicon-M1%2B-111111" alt="Apple Silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jaimo-so/Jaimo-clip/releases/latest"><strong>下载最新版本</strong></a>
+  <a href="https://github.com/Jaimo-so/Jaimo-Flow/releases/latest"><strong>下载最新版本</strong></a>
 </p>
 
 <p align="center">
-  <img src="docs/images/jaimo-hero.png" width="100%" alt="Jaimo 个人工具站产品展示图">
+  <img src="docs/images/jaimo-hero.png" width="100%" alt="Jaimo Flow 个人工具站产品展示图">
 </p>
 
-Jaimo clip 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工具站：首页提供时间、快速便签、本地录音、摄像头检查和最近应用；应用页集中搜索、收藏并启动本机应用；提示词与剪切板页面负责管理长期复用的模板和临时内容。
+Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工具站：首页提供时间、快速便签、本地录音、摄像头检查和最近应用；应用页集中搜索、收藏并启动本机应用；提示词与剪切板页面负责管理长期复用的模板和临时内容。
 
 所有剪切板记录、图片、提示词、便签和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron、WebView 或 AI 运行时；界面和核心能力均使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现。
 
@@ -33,25 +33,25 @@ Jaimo clip 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 
 | 可组合首页 | 本机应用启动台 |
 | --- | --- |
-| ![Jaimo 首页：时间、便签、录音、摄像头与最近应用](docs/images/jaimo-home.png) | ![Jaimo 应用页：搜索、收藏并启动本机应用](docs/images/jaimo-apps.png) |
+| ![Jaimo Flow 首页：时间、便签、录音、摄像头与最近应用](docs/images/jaimo-home.png) | ![Jaimo Flow 应用页：搜索、收藏并启动本机应用](docs/images/jaimo-apps.png) |
 
 首页组件可以排序和隐藏。录音只在用户主动开始后请求麦克风权限，文件保存在本机；摄像头画面只做实时预览，不录制、不保存、不上传。应用启动台扫描本机应用目录，收藏和最近启动记录同样只保存在本机。
 
-产品设计语言记录在 `DESIGN.md`。`jaimo-island-handoff-spec.md` 保留了工具站早期交互方案和设计演进；旧版剪贴板视图的视觉与实现资料继续保留在 `clipflow-app.html` 和 `clipflow-handoff-spec.md`，用于追踪兼容行为。
+产品设计语言记录在 `DESIGN.md`。`jaimo-island-handoff-spec.md` 保留了 Jaimo Flow 工具站早期交互方案和设计演进；旧版剪贴板视图的视觉与实现资料继续保留在 `clipflow-app.html` 和 `clipflow-handoff-spec.md`，用于追踪兼容行为。
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/Jaimo-so/Jaimo-clip/releases/latest) 下载名称以 `-macOS-Apple-Silicon.dmg` 结尾的安装包。
+1. 从 [GitHub Releases](https://github.com/Jaimo-so/Jaimo-Flow/releases/latest) 下载名称以 `-macOS-Apple-Silicon.dmg` 结尾的安装包。
 2. 双击打开 DMG。
-3. 将 `Jaimo clip.app` 拖到镜像中的 `Applications` 快捷入口。
-4. 从“应用程序”文件夹启动 Jaimo clip。启动后会立即显示主面板，并在菜单栏常驻。
+3. 将 `Jaimo Flow.app` 拖到镜像中的 `Applications` 快捷入口。
+4. 从“应用程序”文件夹启动 Jaimo Flow。启动后会立即显示主面板，并在菜单栏常驻。
 
 当前公开安装包使用临时代码签名，尚未使用 Apple Developer ID 公证。其他 Mac 首次打开时可能被 Gatekeeper 阻止；请前往“系统设置 → 隐私与安全性”，在安全提示旁选择“仍要打开”，随后确认一次。不要从非本仓库 Release 的第三方地址下载安装包。
 
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-clip-0.5.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.5.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
@@ -94,11 +94,11 @@ shasum -a 256 -c Jaimo-clip-0.5.0-macOS-Apple-Silicon.dmg.sha256
 - `⌘,`：打开或关闭偏好设置
 - `ESC`：先清空搜索，再关闭面板
 
-开机自动启动需要应用位于 `/Applications`。在 Jaimo clip 偏好设置中开启相应选项即可。
+开机自动启动需要应用位于 `/Applications`。在 Jaimo Flow 偏好设置中开启相应选项即可。
 
 ## 隐私与本机数据
 
-Jaimo clip 不上传剪贴板内容，不要求账户，也没有云同步。链接首版不抓取网页标题，避免让复制行为产生隐式网络请求。只有“检查更新”功能会访问本仓库的 GitHub Release API 和下载安装包。
+Jaimo Flow 不上传剪贴板内容，不要求账户，也没有云同步。链接首版不抓取网页标题，避免让复制行为产生隐式网络请求。只有“检查更新”功能会访问本仓库的 GitHub Release API 和下载安装包。
 
 为保证从旧版 ClipFlow 升级后不丢失记录，应用继续使用原有的内部应用标识 `com.clipflow.mac` 和数据目录：
 
@@ -113,18 +113,18 @@ Jaimo clip 不上传剪贴板内容，不要求账户，也没有云同步。链
 
 ## 应用内更新
 
-应用每 24 小时最多自动检查一次，也可以在偏好设置或菜单栏中手动检查。更新源由 `Resources/Info.plist` 的 `ClipFlowUpdateRepositoryOwner` 和 `ClipFlowUpdateRepositoryName` 定义，当前为 `Jaimo-so/Jaimo-clip`。
+应用每 24 小时最多自动检查一次，也可以在偏好设置或菜单栏中手动检查。更新源由 `Resources/Info.plist` 的 `ClipFlowUpdateRepositoryOwner` 和 `ClipFlowUpdateRepositoryName` 定义，当前为 `Jaimo-so/Jaimo-Flow`。
 
 每个 GitHub Release 需要满足以下契约，否则应用会拒绝一键安装：
 
 - Release 标签使用可比较版本号，例如 `v0.3.1`
 - Apple Silicon 安装包名称以 `-macOS-Apple-Silicon.dmg` 结尾
 - Release 资产包含 GitHub 提供的 `sha256:` digest，或同时上传与 DMG 同名并追加 `.sha256` 的校验文件
-- DMG 根目录包含 `Jaimo clip.app`；为兼容旧包，更新器也能识别 `ClipFlow.app`
+- DMG 根目录包含 `Jaimo Flow.app`；为兼容旧包，更新器也能识别 `Jaimo clip.app` 和 `ClipFlow.app`
 - 应用标识必须为 `com.clipflow.mac`
 - 应用版本必须与 Release 标签一致，可执行文件必须包含 `arm64` 架构，代码签名必须有效
 
-下载使用 HTTPS；安装前会验证 SHA-256、应用标识、版本、架构和代码签名。更新助手会先备份当前应用，替换失败时恢复旧版本，成功后重新启动 Jaimo clip。若已使用 Developer ID 签名，候选版本还必须使用相同的 Team Identifier。
+下载使用 HTTPS；安装前会验证 SHA-256、应用标识、版本、架构和代码签名。更新助手会先备份当前应用，替换失败时恢复旧版本，成功后重新启动 Jaimo Flow。若已使用 Developer ID 签名，候选版本还必须使用相同的 Team Identifier。
 
 ## 从源码构建
 
@@ -139,10 +139,10 @@ Jaimo clip 不上传剪贴板内容，不要求账户，也没有云同步。链
 
 ```bash
 ./Scripts/build-app.sh
-open "build/Jaimo clip.app"
+open "build/Jaimo Flow.app"
 ```
 
-构建脚本只使用 Swift Package Manager 和 macOS 系统框架，并在 `build/Jaimo clip.app` 生成一个临时签名的应用包。脚本会先验证系统默认 SDK；如果 Command Line Tools 中的 Swift 编译器与默认 SDK 版本不一致，会自动选择机器上已安装的兼容 SDK。SDK 只决定编译时使用的系统接口，最低运行版本仍由 `arm64-apple-macosx13.0` 构建目标决定。
+构建脚本只使用 Swift Package Manager 和 macOS 系统框架，并在 `build/Jaimo Flow.app` 生成一个临时签名的应用包。脚本会先验证系统默认 SDK；如果 Command Line Tools 中的 Swift 编译器与默认 SDK 版本不一致，会自动选择机器上已安装的兼容 SDK。SDK 只决定编译时使用的系统接口，最低运行版本仍由 `arm64-apple-macosx13.0` 构建目标决定。
 
 运行开发期自检：
 
@@ -156,7 +156,7 @@ open "build/Jaimo clip.app"
 ./Scripts/package-dmg.sh
 ```
 
-安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-clip-0.5.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
+安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.5.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
 
 如果更换了 `Resources/AppLogo.png`，重新生成 macOS 图标：
 
@@ -198,7 +198,7 @@ clipflow-app.html          旧版剪贴板交互原型
 clipflow-handoff-spec.md   旧版剪贴板实现契约与兼容说明
 ```
 
-Swift Package 内部 target 仍沿用 `ClipFlow` 命名，这是为保持已有构建结构和升级兼容；用户可见品牌均为 `Jaimo clip`。
+Swift Package 内部 target 仍沿用 `ClipFlow` 命名，这是为保持已有构建结构和升级兼容；用户可见品牌均为 `Jaimo Flow`。
 
 ## 参与贡献
 

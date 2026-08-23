@@ -9,9 +9,9 @@ final class StatusItemController: NSObject {
         self.panelController = panelController
         super.init()
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: "Jaimo")
+            button.image = NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: "Jaimo Flow")
             button.image?.isTemplate = true
-            button.toolTip = "Jaimo 个人工具站 · ⌥Space"
+            button.toolTip = "Jaimo Flow 个人工具站 · ⌥Space"
             button.target = self
             button.action = #selector(handleClick)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -32,14 +32,14 @@ final class StatusItemController: NSObject {
 
     private func showMenu() {
         let menu = NSMenu()
-        let show = NSMenuItem(title: "显示 Jaimo 工具站", action: #selector(showPanel), keyEquivalent: "")
+        let show = NSMenuItem(title: "显示 Jaimo Flow 工具站", action: #selector(showPanel), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
         let update = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
         update.target = self
         menu.addItem(update)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出 Jaimo clip", action: #selector(quitApplication), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "退出 Jaimo Flow", action: #selector(quitApplication), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu

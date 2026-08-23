@@ -244,7 +244,7 @@ struct SettingsView: View {
                 do {
                     try preferences.setLaunchAtLogin(enabled)
                 } catch {
-                    model.showToast("开机启动设置失败，请将 Jaimo clip 移到应用程序文件夹后重试")
+                    model.showToast("开机启动设置失败，请将 Jaimo Flow 移到应用程序文件夹后重试")
                 }
             }
         )
