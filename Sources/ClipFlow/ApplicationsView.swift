@@ -95,8 +95,15 @@ final class ApplicationsModel: ObservableObject {
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let records = ApplicationCatalog.scan()
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
+                // AppKit icon lookup stays on the main actor, but yields in small
+                // batches so a large catalog cannot monopolize an input frame.
+                var icons: [String: NSImage] = [:]
+                for (index, record) in records.enumerated() {
+                    icons[record.id] = NSWorkspace.shared.icon(forFile: record.url.path)
+                    if index.isMultiple(of: 8) { await Task.yield() }
+                }
                 self.applications = records.map { record in
                     let lastLaunch = self.lastLaunchByID[record.id].map(Date.init(timeIntervalSince1970:))
                     return LocalApplication(
@@ -105,7 +112,7 @@ final class ApplicationsModel: ObservableObject {
                         displayName: record.displayName,
                         originalBundleName: record.originalBundleName,
                         bundleURL: record.url,
-                        icon: NSWorkspace.shared.icon(forFile: record.url.path),
+                        icon: icons[record.id] ?? NSImage(),
                         version: record.version,
                         isFavorite: self.favoriteIDs.contains(record.id),
                         lastLaunchedAt: lastLaunch,
@@ -262,12 +269,13 @@ struct ApplicationsView: View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("本机应用")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(theme.muted)
+                VStack(alignment: .leading, spacing: 5) {
                     Text("应用程序")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 23, weight: .semibold))
+                        .tracking(-0.5)
+                    Text("收藏常用应用，快速打开")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
                 }
                 Spacer()
                 HStack(spacing: 8) {
@@ -284,20 +292,19 @@ struct ApplicationsView: View {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(theme.muted)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(FlowIconButtonStyle())
                         .accessibilityLabel("清空应用搜索")
+                        .help("清空搜索")
                     }
                 }
                 .padding(.horizontal, 11)
-                .frame(width: 260, height: 34)
-                .background(theme.chip)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.hairline, lineWidth: 0.5))
+                .frame(width: 260, height: 36)
+                .background(theme.card)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(searchFocused ? theme.foreground.opacity(0.22) : .clear, lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            .padding(.horizontal, 18)
-            .frame(height: 72)
-
-            Divider().overlay(theme.weakHairline)
+            .padding(.horizontal, 24)
+            .frame(height: 90)
 
             GeometryReader { proxy in
                 HStack(spacing: 0) {
@@ -324,11 +331,11 @@ struct ApplicationsView: View {
 
             if model.favoriteApplications.isEmpty && model.unavailableFavorites.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "star")
+                    Image(systemName: "square.grid.2x2")
                         .font(.system(size: 18))
                     Text("还没有常用应用")
                         .font(.system(size: 11.5))
-                    Text("在右侧收藏后会显示在这里。")
+                    Text("右键点击应用，选择“加入常用”。")
                         .font(.system(size: 10.5))
                         .multilineTextAlignment(.center)
                 }
@@ -358,17 +365,12 @@ struct ApplicationsView: View {
                                 }
                                 .buttonStyle(ApplicationRowButtonStyle())
                                 .accessibilityLabel("启动 \(application.displayName)")
-
-                                Button {
-                                    model.toggleFavorite(application)
-                                } label: {
-                                    Image(systemName: "star.fill")
-                                        .foregroundStyle(theme.star)
-                                        .frame(width: 26, height: 26)
+                                .contextMenu {
+                                    Button("从常用中移除") { model.toggleFavorite(application) }
                                 }
-                                .buttonStyle(ApplicationSmallButtonStyle())
-                                .accessibilityLabel("取消收藏 \(application.displayName)")
-                                .help("取消收藏")
+                                .accessibilityAction(named: Text("从常用中移除")) {
+                                    model.toggleFavorite(application)
+                                }
                             }
                         }
 
@@ -393,7 +395,7 @@ struct ApplicationsView: View {
                                     Image(systemName: "xmark")
                                         .frame(width: 26, height: 26)
                                 }
-                                .buttonStyle(ApplicationSmallButtonStyle())
+                                .buttonStyle(FlowIconButtonStyle())
                                 .accessibilityLabel("移除不可用收藏 \(application.displayName)")
                                 .help("移除收藏")
                             }
@@ -425,7 +427,7 @@ struct ApplicationsView: View {
                     Image(systemName: "arrow.clockwise")
                         .frame(width: 26, height: 26)
                 }
-                .buttonStyle(ApplicationSmallButtonStyle())
+                .buttonStyle(FlowIconButtonStyle())
                 .accessibilityLabel("重新扫描应用")
                 .help("重新扫描应用")
                 .disabled(model.isLoading)
@@ -507,6 +509,7 @@ private struct ApplicationTile: View {
     @ObservedObject var model: ApplicationsModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
@@ -530,27 +533,28 @@ private struct ApplicationTile: View {
                 .padding(.vertical, 7)
                 .contentShape(RoundedRectangle(cornerRadius: 13))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ApplicationTileButtonStyle())
             .accessibilityLabel("启动 \(application.displayName)")
-
-            Button {
-                model.toggleFavorite(application)
-            } label: {
-                Image(systemName: application.isFavorite ? "star.fill" : "star")
-                    .font(.system(size: 11))
-                    .foregroundStyle(application.isFavorite ? theme.star : theme.muted)
-                    .frame(width: 26, height: 26)
+            .contextMenu {
+                Button(application.isFavorite ? "从常用中移除" : "加入常用") {
+                    model.toggleFavorite(application)
+                }
             }
-            .buttonStyle(ApplicationSmallButtonStyle())
-            .opacity(application.isFavorite || hovering ? 1 : 0.72)
-            .accessibilityLabel(application.isFavorite ? "取消收藏 \(application.displayName)" : "收藏 \(application.displayName)")
-            .help(application.isFavorite ? "取消收藏" : "收藏")
-            .padding(4)
+            .accessibilityAction(named: Text(application.isFavorite ? "从常用中移除" : "加入常用")) {
+                model.toggleFavorite(application)
+            }
         }
         .background(hovering ? theme.chip : Color.clear)
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(hovering ? theme.hairline : .clear, lineWidth: 0.5))
         .clipShape(RoundedRectangle(cornerRadius: 13))
+        .animation(reduceMotion ? nil : FlowMotion.hover, value: hovering)
         .onHover { hovering = $0 }
+    }
+}
+
+private struct ApplicationTileButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(FlowControlFeedback(isPressed: configuration.isPressed, cornerRadius: 13))
     }
 }
 
@@ -562,16 +566,6 @@ private struct ApplicationRowButtonStyle: ButtonStyle {
         configuration.label
             .background(configuration.isPressed ? theme.chipHigh : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-private struct ApplicationSmallButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
-
-    func makeBody(configuration: Configuration) -> some View {
-        let theme = ClipFlowTheme(scheme: colorScheme)
-        configuration.label
-            .background(configuration.isPressed ? theme.chipHigh : theme.chip)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .modifier(FlowControlFeedback(isPressed: configuration.isPressed, cornerRadius: 10, hoverFill: theme.chip, pressedScale: 0.99))
     }
 }

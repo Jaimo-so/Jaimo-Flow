@@ -21,6 +21,10 @@ trap cleanup EXIT
 mkdir -p "$DIST_DIR"
 /usr/bin/ditto "$APP_DIR" "$STAGING_DIR/Jaimo Flow.app"
 /bin/ln -s /Applications "$STAGING_DIR/Applications"
+# Released 0.3.x–0.5.0 updaters look for the previous bundle name.
+# Finder hides this compatibility link, while the updater resolves the real app.
+/bin/ln -s "Jaimo Flow.app" "$STAGING_DIR/Jaimo clip.app"
+print -r -- "Jaimo clip.app" > "$STAGING_DIR/.hidden"
 
 /usr/bin/hdiutil create \
     -volname "Jaimo Flow" \
@@ -31,7 +35,7 @@ mkdir -p "$DIST_DIR"
     "$DMG_PATH"
 
 /usr/bin/hdiutil verify "$DMG_PATH"
-/usr/bin/shasum -a 256 "$DMG_PATH" > "$CHECKSUM_PATH"
+(cd "$DIST_DIR" && /usr/bin/shasum -a 256 "${DMG_PATH:t}") > "$CHECKSUM_PATH"
 
 echo "$DMG_PATH"
 echo "$CHECKSUM_PATH"

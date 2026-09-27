@@ -118,6 +118,7 @@ public enum ClipFilter: String, CaseIterable, Identifiable, Sendable {
     case image
     case link
     case favorite
+    case apiKey
 
     public var id: String { rawValue }
 
@@ -128,6 +129,7 @@ public enum ClipFilter: String, CaseIterable, Identifiable, Sendable {
         case .image: return "图片"
         case .link: return "链接"
         case .favorite: return "收藏"
+        case .apiKey: return "API Key"
         }
     }
 }

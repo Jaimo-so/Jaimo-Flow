@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.5.0</string>
+    <string>0.6.0</string>
     <key>CFBundleVersion</key>
-    <string>8</string>
+    <string>9</string>
     <key>ClipFlowUpdateRepositoryOwner</key>
     <string>Jaimo-so</string>
     <key>ClipFlowUpdateRepositoryName</key>
@@ -33,7 +33,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSCameraUsageDescription</key>
-    <string>Jaimo Flow 仅在你主动启动摄像头检查时，用于本机实时预览画面。画面不会录制、保存或上传。</string>
+    <string>Jaimo Flow 仅在你主动打开镜子时，用于本机实时预览画面。画面不会录制、保存或上传。</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Jaimo Flow 仅在你主动开始录音时使用麦克风，录音文件只保存在本机，不会上传。</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>

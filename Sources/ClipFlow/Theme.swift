@@ -29,24 +29,30 @@ struct ClipFlowTheme {
         )
     }
 
-    var foreground: Color { scheme == .dark ? oklch(0.97, 0.004, 260) : oklch(0.22, 0.01, 265) }
-    var foregroundSecondary: Color { scheme == .dark ? oklch(0.84, 0.008, 260) : oklch(0.34, 0.01, 265) }
-    var muted: Color { scheme == .dark ? oklch(0.72, 0.012, 260) : oklch(0.48, 0.012, 265) }
+    var foreground: Color { scheme == .dark ? oklch(0.95, 0.003, 90) : oklch(0.25, 0.003, 90) }
+    var foregroundSecondary: Color { scheme == .dark ? oklch(0.82, 0.003, 90) : oklch(0.40, 0.003, 90) }
+    var muted: Color { scheme == .dark ? oklch(0.68, 0.003, 90) : oklch(0.52, 0.003, 90) }
     var accent: Color { scheme == .dark ? oklch(0.74, 0.13, 218) : oklch(0.56, 0.14, 218) }
-    var danger: Color { oklch(0.70, 0.17, 25) }
-    var star: Color { oklch(0.83, 0.15, 85) }
+    var danger: Color { scheme == .dark ? oklch(0.73, 0.14, 25) : oklch(0.52, 0.17, 25) }
+    var star: Color { scheme == .dark ? oklch(0.80, 0.12, 85) : oklch(0.58, 0.12, 85) }
+
+    var canvas: Color { scheme == .dark ? oklch(0.22, 0.003, 90) : oklch(0.975, 0.004, 90) }
+    var card: Color { scheme == .dark ? oklch(0.27, 0.003, 90) : .white }
+    var primaryFill: Color { foreground }
+    var onPrimary: Color { scheme == .dark ? oklch(0.22, 0.003, 90) : .white }
+    var accentWash: Color { accent.opacity(scheme == .dark ? 0.13 : 0.07) }
 
     var glass: Color {
-        scheme == .dark ? oklch(0.24, 0.022, 265, 0.58) : oklch(0.96, 0.004, 265, 0.62)
+        canvas.opacity(0.96)
     }
     var glassSecondary: Color {
-        scheme == .dark ? oklch(0.20, 0.02, 265, 0.42) : oklch(0.91, 0.006, 265, 0.48)
+        scheme == .dark ? oklch(0.27, 0.003, 90, 0.90) : Color.white.opacity(0.90)
     }
-    var chip: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.08) }
-    var chipHigh: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.14) }
-    var hairline: Color { (scheme == .dark ? Color.white : Color.black).opacity(scheme == .dark ? 0.08 : 0.10) }
+    var chip: Color { foreground.opacity(scheme == .dark ? 0.055 : 0.035) }
+    var chipHigh: Color { foreground.opacity(scheme == .dark ? 0.10 : 0.07) }
+    var hairline: Color { foreground.opacity(scheme == .dark ? 0.09 : 0.07) }
     var weakHairline: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.045) }
-    var selection: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.13) }
+    var selection: Color { accentWash }
     var skeleton: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.07) }
     var skeletonHigh: Color { (scheme == .dark ? Color.white : Color.black).opacity(0.13) }
 
@@ -134,12 +140,12 @@ struct KeyCap: View {
 }
 
 struct GlassButtonStyle: ButtonStyle {
-    enum Kind { case normal, primary, danger }
+    enum Kind { case normal, primary, quiet, danger }
     let kind: Kind
     let horizontalPadding: CGFloat
     @Environment(\.colorScheme) private var colorScheme
 
-    init(kind: Kind, horizontalPadding: CGFloat = 8) {
+    init(kind: Kind, horizontalPadding: CGFloat = 12) {
         self.kind = kind
         self.horizontalPadding = horizontalPadding
     }
@@ -160,44 +166,81 @@ private struct GlassButtonBody: View {
     let horizontalPadding: CGFloat
     let colorScheme: ColorScheme
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         configuration.label
-            .font(.system(size: 12))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(foreground(theme: theme))
-            .frame(maxWidth: .infinity, minHeight: 26)
+            .frame(maxWidth: .infinity, minHeight: 30)
             .padding(.horizontal, horizontalPadding)
             .background(background(theme: theme))
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(border(theme: theme), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isFocused ? theme.foreground.opacity(0.28) : .clear, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 7))
+            .modifier(FlowControlFeedback(isPressed: configuration.isPressed, cornerRadius: 7))
+            .opacity(isEnabled ? 1 : 0.38)
+            .animation(reduceMotion ? nil : FlowMotion.hover, value: hovering)
             .onHover { hovering = $0 }
     }
 
     private func background(theme: ClipFlowTheme) -> Color {
-        if configuration.isPressed { return (colorScheme == .dark ? Color.white : Color.black).opacity(0.20) }
+        let highlighted = isEnabled && (hovering || configuration.isPressed)
         switch kind {
-        case .normal: return hovering ? theme.chipHigh : theme.chip
-        case .primary: return theme.accent.opacity(hovering ? 0.34 : 0.22)
-        case .danger: return hovering ? theme.danger.opacity(0.16) : theme.chip
+        case .normal: return highlighted ? theme.chipHigh : theme.chip
+        case .primary: return theme.primaryFill.opacity(highlighted ? 0.82 : 1)
+        case .quiet: return highlighted ? theme.chip : .clear
+        case .danger: return theme.danger.opacity(highlighted ? 0.15 : 0.07)
         }
     }
 
     private func foreground(theme: ClipFlowTheme) -> Color {
-        if isDanger && hovering { return theme.danger.opacity(0.95) }
-        return isDanger ? theme.foregroundSecondary : theme.foreground
+        switch kind {
+        case .primary: return theme.onPrimary
+        case .danger: return theme.danger
+        case .normal, .quiet: return theme.foregroundSecondary
+        }
     }
+}
 
-    private var isDanger: Bool {
-        if case .danger = kind { return true }
-        return false
+/// Quiet toolbar controls share one hit area and the same hover/disabled states.
+struct FlowIconButtonStyle: ButtonStyle {
+    var danger = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        FlowIconButtonBody(configuration: configuration, danger: danger, colorScheme: colorScheme)
     }
+}
 
-    private func border(theme: ClipFlowTheme) -> Color {
-        kind == .primary ? theme.accent.opacity(0.45) : theme.hairline
+private struct FlowIconButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    let danger: Bool
+    let colorScheme: ColorScheme
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        let highlighted = isEnabled && (hovering || configuration.isPressed)
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(danger ? theme.danger : highlighted ? theme.foreground : theme.muted)
+            .frame(minWidth: 28, minHeight: 28)
+            .background(highlighted ? (danger ? theme.danger.opacity(0.09) : theme.chipHigh) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(isFocused ? theme.foreground.opacity(0.28) : .clear, lineWidth: 1))
+            .modifier(FlowControlFeedback(isPressed: configuration.isPressed, cornerRadius: 7))
+            .opacity(isEnabled ? 1 : 0.38)
+            .animation(reduceMotion ? nil : FlowMotion.hover, value: hovering)
+            .onHover { hovering = $0 }
     }
 }
 

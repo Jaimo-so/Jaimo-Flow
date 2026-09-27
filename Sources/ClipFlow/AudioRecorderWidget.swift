@@ -19,6 +19,8 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var meterLevels: [Double] = Array(repeating: 0.08, count: 28)
 
+    var onWillRevealRecording: (() -> Void)?
+
     private var recorder: AVAudioRecorder?
     private var meterTimer: Timer?
     private var currentRecordingURL: URL?
@@ -119,6 +121,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
 
     func revealLatestRecording() {
         guard let url = latestRecordingURL else { return }
+        onWillRevealRecording?()
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
@@ -253,7 +256,7 @@ struct AudioRecorderWidget: View {
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 ZStack {
                     Circle()
                         .fill(model.isActive ? theme.danger.opacity(0.14) : theme.chip)
@@ -261,21 +264,24 @@ struct AudioRecorderWidget: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(model.isActive ? theme.danger : theme.foregroundSecondary)
                 }
-                .frame(width: 42, height: 42)
+                .frame(width: 32, height: 32)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.elapsedText)
-                        .font(.system(size: 23, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 21, weight: .semibold, design: .monospaced))
                         .monospacedDigit()
-                    Text(activityLabel)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(theme.muted)
+                    if let activityLabel {
+                        Text(activityLabel)
+                            .font(.system(size: 10.5))
+                            .lineLimit(2)
+                            .foregroundStyle(theme.muted)
+                    }
                 }
 
                 Spacer(minLength: 8)
 
                 AudioMeterView(levels: model.meterLevels, active: model.isRecording)
-                    .frame(width: 118, height: 38)
+                    .frame(width: 52, height: 30)
                     .accessibilityHidden(true)
             }
 
@@ -305,14 +311,14 @@ struct AudioRecorderWidget: View {
                         .fixedSize()
                 } else if model.latestRecordingURL != nil {
                     Button("在访达中显示", action: model.revealLatestRecording)
-                        .buttonStyle(GlassButtonStyle(kind: .normal))
+                        .buttonStyle(GlassButtonStyle(kind: .quiet))
                         .fixedSize()
                 }
 
                 Spacer(minLength: 0)
             }
         }
-        .frame(minHeight: 112)
+        .frame(minHeight: 96)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("录音组件")
     }
@@ -320,7 +326,7 @@ struct AudioRecorderWidget: View {
     private var primaryButtonTitle: String {
         if model.isRecording { return "暂停" }
         if model.isPaused { return "继续" }
-        return "开始录音"
+        return model.status == .requesting ? "正在准备…" : "开始录音"
     }
 
     private var primaryButtonSymbol: String {
@@ -329,11 +335,11 @@ struct AudioRecorderWidget: View {
         return "record.circle"
     }
 
-    private var activityLabel: String {
+    private var activityLabel: String? {
         if model.isRecording { return "正在录制麦克风声音" }
         if model.isPaused { return "已暂停，点继续恢复录音" }
         if let url = model.latestRecordingURL { return url.lastPathComponent }
-        return "点击开始后请求麦克风权限"
+        return nil
     }
 }
 
@@ -344,13 +350,16 @@ private struct AudioMeterView: View {
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                Capsule()
-                    .fill(active ? theme.danger.opacity(0.86) : theme.muted.opacity(0.28))
-                    .frame(width: 2, height: max(3, 34 * level))
+        GeometryReader { proxy in
+            HStack(alignment: .center, spacing: 1) {
+                ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(active ? theme.danger.opacity(0.86) : theme.muted.opacity(0.28))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: max(3, (proxy.size.height - 2) * level))
+                }
             }
+            .frame(height: proxy.size.height)
         }
-        .frame(maxHeight: .infinity)
     }
 }

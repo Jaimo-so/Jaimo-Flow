@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    private let homeModel: HomeDashboardModel?
     @ObservedObject private var preferences: PreferencesStore
     @ObservedObject private var updater: UpdateManager
     @Environment(\.colorScheme) private var colorScheme
@@ -11,8 +12,9 @@ struct SettingsView: View {
     @State private var clearHover = false
     @FocusState private var launchToggleFocused: Bool
 
-    init(model: AppModel) {
+    init(model: AppModel, homeModel: HomeDashboardModel? = nil) {
         self.model = model
+        self.homeModel = homeModel
         preferences = model.preferences
         updater = model.updateManager
     }
@@ -67,6 +69,12 @@ struct SettingsView: View {
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
                                     .tint(theme.accent)
+                            }
+                        }
+
+                        if let homeModel {
+                            settingsGroup(title: "首页照片", theme: theme) {
+                                MirrorPhotoSettingsView(model: homeModel)
                             }
                         }
 
@@ -321,5 +329,54 @@ struct SettingsView: View {
     private func close() {
         disarmClear()
         model.settingsOpen = false
+    }
+}
+
+private struct MirrorPhotoSettingsView: View {
+    @ObservedObject var model: HomeDashboardModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        VStack(alignment: .leading, spacing: 10) {
+            Color.clear
+                .aspectRatio(16 / 9, contentMode: .fit)
+                .overlay {
+                    if let url = model.mirrorPhotoURL {
+                        CachedDiskImage(url: url, maxPixelSize: 900, contentMode: .fill)
+                            .id(url)
+                    } else {
+                        Rectangle().fill(theme.chip)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    if model.isLoadingMirrorPhoto {
+                        ProgressView().padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .accessibilityLabel("首页照片预览，横向 16 比 9")
+
+            HStack(spacing: 8) {
+                Button("随机换一张") {
+                    Task { await model.randomizeMirrorPhoto() }
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal))
+                Button("选择本地照片") { model.chooseMirrorPhoto() }
+                    .buttonStyle(GlassButtonStyle(kind: .normal))
+            }
+            .disabled(model.isLoadingMirrorPhoto)
+
+            Text("照片以 16:9 居中裁剪。随机照片需联网获取，选好后保存在本机。")
+                .font(.system(size: 11.5))
+                .foregroundStyle(theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = model.mirrorPhotoError {
+                Text(error)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }

@@ -13,7 +13,7 @@ final class PreferencesStore: ObservableObject {
         static let closeAfterCopy = "closeAfterCopy"
         static let excludedApps = "excludedApps"
         static let promptGroupOrder = "promptGroupOrder"
-        static let hasPresentedIslandOnboarding = "hasPresentedIslandOnboarding"
+        static let workspaceSize = "island.workspaceSize"
     }
 
     static let defaultExcludedApps = [
@@ -34,6 +34,17 @@ final class PreferencesStore: ObservableObject {
         didSet { defaults.set(promptGroupOrder, forKey: Key.promptGroupOrder) }
     }
 
+    static let defaultWorkspaceSize = CGSize(width: 948, height: 680)
+
+    var workspaceSize: CGSize {
+        didSet {
+            defaults.set(
+                ["width": Double(workspaceSize.width), "height": Double(workspaceSize.height)],
+                forKey: Key.workspaceSize
+            )
+        }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -41,6 +52,14 @@ final class PreferencesStore: ObservableObject {
         defaults.register(defaults: [Key.closeAfterCopy: true])
         closeAfterCopy = defaults.bool(forKey: Key.closeAfterCopy)
         promptGroupOrder = defaults.stringArray(forKey: Key.promptGroupOrder) ?? []
+        if let saved = defaults.dictionary(forKey: Key.workspaceSize),
+           let width = saved["width"] as? Double,
+           let height = saved["height"] as? Double,
+           width.isFinite, height.isFinite, width > 0, height > 0 {
+            workspaceSize = CGSize(width: width, height: height)
+        } else {
+            workspaceSize = Self.defaultWorkspaceSize
+        }
 
         if let data = defaults.data(forKey: Key.excludedApps),
            let decoded = try? JSONDecoder().decode([ExcludedApp].self, from: data) {
@@ -80,12 +99,6 @@ final class PreferencesStore: ObservableObject {
         let lowered = bundleID.lowercased()
         return excludedApps.contains(where: { $0.name == "1Password" })
             && (lowered.contains("1password") || lowered.contains("agilebits"))
-    }
-
-    func consumeIslandOnboardingPresentation() -> Bool {
-        guard !defaults.bool(forKey: Key.hasPresentedIslandOnboarding) else { return false }
-        defaults.set(true, forKey: Key.hasPresentedIslandOnboarding)
-        return true
     }
 
     private func persistExcludedApps() {

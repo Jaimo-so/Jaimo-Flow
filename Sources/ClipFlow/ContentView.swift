@@ -25,13 +25,14 @@ struct ContentView: View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         framedContent(layeredContent(theme), theme: theme)
             .foregroundStyle(theme.foreground)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.settingsOpen)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.promptEditorOpen)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.promptRunnerOpen)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.promptDeleteConfirmationOpen)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.toastMessage)
+            .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.settingsOpen)
+            .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.promptEditorOpen)
+            .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.promptRunnerOpen)
+            .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.promptDeleteConfirmationOpen)
+            .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.toastMessage)
             .onAppear {
                 if let fixedMode { model.setMode(fixedMode) }
+                if model.libraryMode == .history { model.loadCredentials() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .clipFlowFocusSearch)) { _ in
                 searchFocused = true
@@ -48,6 +49,8 @@ struct ContentView: View {
             || model.promptEditorOpen
             || model.promptRunnerOpen
             || model.promptDeleteConfirmationOpen
+            || model.credentialEditorOpen
+            || model.credentialDeleteConfirmationOpen
         return ZStack {
             if !embedded {
                 if colorScheme == .dark {
@@ -71,31 +74,39 @@ struct ContentView: View {
 
             if model.settingsOpen && !embedded {
                 SettingsView(model: model)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
                     .zIndex(20)
             }
 
             if model.promptEditorOpen {
                 PromptEditorView(model: model)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
                     .zIndex(22)
             }
 
             if model.promptRunnerOpen {
                 PromptRunnerView(model: model)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
                     .zIndex(24)
             }
 
             if model.promptDeleteConfirmationOpen {
                 PromptDeleteConfirmationView(model: model)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
                     .zIndex(26)
+            }
+
+            if model.credentialEditorOpen {
+                CredentialEditorView(model: model).zIndex(28)
+            }
+
+            if model.credentialDeleteConfirmationOpen {
+                CredentialDeleteConfirmationView(model: model).zIndex(30)
             }
 
             if let message = model.toastMessage, !embedded {
                 toast(message, theme: theme)
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion, distance: 10))
                     .zIndex(40)
             }
         }
@@ -150,15 +161,15 @@ struct ContentView: View {
                 .foregroundStyle(theme.muted)
                 .accessibilityHidden(true)
             TextField(
-                model.libraryMode == .history ? "搜索剪贴板历史…" : "搜索提示词…",
+                model.isCredentialGroup ? "搜索 API Key / 密码名称…" : model.libraryMode == .history ? "搜索剪贴板历史…" : "搜索提示词…",
                 text: model.libraryMode == .history ? $model.query : $model.promptQuery
             )
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .foregroundStyle(theme.foreground)
                 .focused($searchFocused)
-                .accessibilityLabel(model.libraryMode == .history ? "搜索剪贴板历史" : "搜索提示词")
-                .accessibilityHint(model.libraryMode == .history ? "输入关键词筛选剪贴板记录" : "输入关键词筛选提示词")
+                .accessibilityLabel(model.isCredentialGroup ? "搜索 API Key / 密码名称" : model.libraryMode == .history ? "搜索剪贴板历史" : "搜索提示词")
+                .accessibilityHint(model.isCredentialGroup ? "按名称搜索已保存的 API Key 和密码" : model.libraryMode == .history ? "输入关键词筛选剪贴板记录" : "输入关键词筛选提示词")
             KeyCap(text: "⌘F", muted: true)
                 .accessibilityHidden(true)
         }
@@ -225,12 +236,13 @@ struct ContentView: View {
                 .padding(.vertical, 8)
             }
 
-            if model.libraryMode == .prompts {
+            if model.libraryMode == .prompts || model.isCredentialGroup {
                 Divider()
                     .overlay(theme.hairline)
                     .frame(height: 25)
                 Button {
-                    model.beginCreatePrompt()
+                    if model.isCredentialGroup { model.beginCreateCredential() }
+                    else { model.beginCreatePrompt() }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "plus")
@@ -250,8 +262,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 10)
-                .help("新建提示词（⌘N）")
-                .accessibilityLabel("新建提示词")
+                .help(model.isCredentialGroup ? "新建 API Key / 密码（⌘N）" : "新建提示词（⌘N）")
+                .accessibilityLabel(model.isCredentialGroup ? "新建 API Key / 密码" : "新建提示词")
             }
         }
         .frame(height: 43)
@@ -263,6 +275,8 @@ struct ContentView: View {
         GeometryReader { proxy in
             if model.libraryMode == .prompts {
                 PromptLibraryBody(model: model, compact: proxy.size.width <= 720)
+            } else if model.isCredentialGroup {
+                CredentialLibraryView(model: model)
             } else if proxy.size.width <= 720 {
                 VStack(spacing: 0) {
                     HistoryListView(model: model)
@@ -289,7 +303,7 @@ struct ContentView: View {
                     footerHint("↑↓", "导航")
                     footerHint("↵", model.libraryMode == .history ? "复制" : "使用")
                     if proxy.size.width > 520 {
-                        footerHint("⌘S", "收藏")
+                        footerHint(model.isCredentialGroup ? "⌘E" : "⌘S", model.isCredentialGroup ? "编辑" : "收藏")
                     }
                     if proxy.size.width > 720 {
                         footerHint(model.libraryMode == .history ? "⌘⌫" : "⌘N", model.libraryMode == .history ? "删除" : "新建")
@@ -322,6 +336,9 @@ struct ContentView: View {
     }
 
     private var footerCount: String {
+        if model.isCredentialGroup {
+            return model.credentialError == nil ? "\(model.filteredCredentials.count) 条 · 本机钥匙串" : "钥匙串读取失败"
+        }
         switch model.phase {
         case .loading: return "加载中…"
         case .failed: return "读取失败"

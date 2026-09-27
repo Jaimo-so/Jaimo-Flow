@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel!
     private var monitor: ClipboardMonitor!
     private var panelController: PanelController!
+    private var floatingBallController: FloatingBallController!
     private var statusController: StatusItemController!
     private var hotKeyManager: HotKeyManager?
 
@@ -16,7 +17,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model = AppModel(preferences: preferences)
         monitor = ClipboardMonitor()
         panelController = PanelController(model: model, preferences: preferences)
-        statusController = StatusItemController(panelController: panelController)
+        floatingBallController = FloatingBallController(panelController: panelController)
+        let ballController = floatingBallController!
+        panelController.onVisibilityChanged = { [weak ballController] visible in
+            if visible {
+                ballController?.prepareForWorkspacePresentation()
+            } else {
+                ballController?.restoreAfterWorkspaceHides()
+            }
+        }
+        statusController = StatusItemController(
+            panelController: panelController,
+            floatingBallController: floatingBallController
+        )
 
         model.clipboardMonitor = monitor
         monitor.isSourceExcluded = { [weak preferences] bundleID in
@@ -43,10 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model?.updateManager.checkIfNeeded()
         }
 
-        // 首次启动只展示一次紧凑灵动岛，后续登录启动保持隐藏。
-        if preferences.consumeIslandOnboardingPresentation() {
-            panelController.showCompact()
-        }
+        // 悬浮球是新的常驻入口；用户手动隐藏后不会在重启时强制恢复。
+        floatingBallController.showIfEnabled()
     }
 
     func applicationShouldHandleReopen(
@@ -59,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         panelController?.prepareForTermination()
+        floatingBallController?.hideBall()
         monitor?.stop()
     }
 

@@ -4,9 +4,11 @@ import AppKit
 final class StatusItemController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panelController: PanelController
+    private let floatingBallController: FloatingBallController
 
-    init(panelController: PanelController) {
+    init(panelController: PanelController, floatingBallController: FloatingBallController) {
         self.panelController = panelController
+        self.floatingBallController = floatingBallController
         super.init()
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: "Jaimo Flow")
@@ -35,6 +37,14 @@ final class StatusItemController: NSObject {
         let show = NSMenuItem(title: "显示 Jaimo Flow 工具站", action: #selector(showPanel), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
+        let floatingBallTitle = floatingBallController.isEnabled ? "隐藏悬浮球" : "显示悬浮球"
+        let floatingBall = NSMenuItem(
+            title: floatingBallTitle,
+            action: #selector(toggleFloatingBall),
+            keyEquivalent: ""
+        )
+        floatingBall.target = self
+        menu.addItem(floatingBall)
         let update = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
         update.target = self
         menu.addItem(update)
@@ -53,6 +63,10 @@ final class StatusItemController: NSObject {
 
     @objc private func checkForUpdates() {
         panelController.showUpdateSettings()
+    }
+
+    @objc private func toggleFloatingBall() {
+        floatingBallController.toggleBallVisibility()
     }
 
     @objc private func quitApplication() {

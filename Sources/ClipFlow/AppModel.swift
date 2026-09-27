@@ -54,6 +54,16 @@ final class AppModel: ObservableObject {
             filteredPromptsCache = nil
         }
     }
+    @Published var credentialEntries: [CredentialEntry] = []
+    @Published var credentialError: String?
+    @Published var selectedCredentialID: String?
+    @Published var credentialEditorOpen = false
+    @Published var credentialDeleteConfirmationOpen = false
+    @Published var editingCredentialID: String?
+    @Published var credentialDraftTitle = ""
+    @Published var credentialDraftSecret = ""
+    let credentialStore: CredentialStore
+
     @Published var phase: ClipFlowPhase = .loading
     @Published var libraryMode: LibraryMode = .history
     @Published var query = "" {
@@ -97,7 +107,8 @@ final class AppModel: ObservableObject {
         prompts: [PromptItem]
     )?
 
-    init(preferences: PreferencesStore) {
+    init(preferences: PreferencesStore, credentialStore: CredentialStore = CredentialStore()) {
+        self.credentialStore = credentialStore
         self.preferences = preferences
         updateManager = UpdateManager()
     }
@@ -118,6 +129,7 @@ final class AppModel: ObservableObject {
             case .image: matchesFilter = item.category == .image
             case .link: matchesFilter = item.category == .link
             case .favorite: matchesFilter = item.isFavorite
+            case .apiKey: matchesFilter = false
             }
             guard matchesFilter else { return false }
             guard !needle.isEmpty else { return true }
@@ -202,6 +214,7 @@ final class AppModel: ObservableObject {
         case .image: return items.filter { $0.category == .image }.count
         case .link: return items.filter { $0.category == .link }.count
         case .favorite: return items.filter(\.isFavorite).count
+        case .apiKey: return credentialEntries.count
         }
     }
 
@@ -247,14 +260,16 @@ final class AppModel: ObservableObject {
     }
 
     func setMode(_ mode: LibraryMode) {
+        guard libraryMode != mode else { return }
         libraryMode = mode
         focusArea = .other
-        if mode == .history { normalizeHistorySelection(preferFirst: true) }
-        else { normalizePromptSelection(preferFirst: true) }
+        if mode == .history { normalizeHistorySelection() }
+        else { normalizePromptSelection() }
     }
 
     func setFilter(_ newFilter: ClipFilter) {
         filter = newFilter
+        if newFilter == .apiKey { loadCredentials() }
         filteredCache = nil
         selectedID = filteredItems.first?.id
     }
@@ -320,6 +335,13 @@ final class AppModel: ObservableObject {
     }
 
     func moveSelection(_ offset: Int) {
+        if isCredentialGroup {
+            let visible = filteredCredentials
+            guard !visible.isEmpty else { return }
+            let current = visible.firstIndex { $0.id == selectedCredentialID } ?? 0
+            selectedCredentialID = visible[min(max(0, current + offset), visible.count - 1)].id
+            return
+        }
         if libraryMode == .history {
             let visible = filteredItems
             guard !visible.isEmpty else { return }
@@ -334,6 +356,7 @@ final class AppModel: ObservableObject {
     }
 
     func copySelected() {
+        if isCredentialGroup { copyCredential(); return }
         if libraryMode == .prompts {
             useSelectedPrompt()
             return
@@ -349,6 +372,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleFavorite() {
+        if isCredentialGroup { return }
         if libraryMode == .prompts {
             togglePromptFavorite()
             return
@@ -365,6 +389,10 @@ final class AppModel: ObservableObject {
     }
 
     func deleteSelected() {
+        if isCredentialGroup {
+            credentialDeleteConfirmationOpen = selectedCredential != nil
+            return
+        }
         if libraryMode == .prompts {
             guard selectedPrompt != nil else { return }
             promptDeleteConfirmationOpen = true
@@ -551,7 +579,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func finishCopy(message: String) {
+    func finishCopy(message: String) {
         showToast(message)
         if preferences.closeAfterCopy {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -572,6 +600,7 @@ final class AppModel: ObservableObject {
     }
 
     private func resetHistorySelection() {
+        selectedCredentialID = filteredCredentials.first?.id
         filteredCache = nil
         selectedID = filteredItems.first?.id
     }

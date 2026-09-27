@@ -1,11 +1,43 @@
 import AppKit
+import ImageIO
 @preconcurrency import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
-enum HomeWidgetLayoutRole: String, Codable {
-    case compact
-    case regular
-    case wide
+enum HomeWidgetSize: String, Codable, CaseIterable, Identifiable {
+    case small
+    case medium
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "小型"
+        case .medium: return "中型"
+        case .large: return "大型"
+        }
+    }
+
+    var cardHeight: CGFloat {
+        switch self {
+        case .small: return 178
+        case .medium: return 206
+        case .large: return 280
+        }
+    }
+}
+
+enum MirrorAspect: String, CaseIterable, Identifiable {
+    case automatic, landscape, portrait
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .automatic: return "自动"
+        case .landscape: return "横向 16:9"
+        case .portrait: return "竖向 9:16"
+        }
+    }
 }
 
 struct HomeWidgetDescriptor: Identifiable {
@@ -13,16 +45,18 @@ struct HomeWidgetDescriptor: Identifiable {
     let title: String
     let defaultOrder: Int
     let defaultVisibility: Bool
-    let layoutRole: HomeWidgetLayoutRole
+    let defaultSize: HomeWidgetSize
+    let allowedSizes: [HomeWidgetSize]
 }
 
 enum HomeWidgetRegistry {
     static let descriptors: [HomeWidgetDescriptor] = [
-        .init(id: .clock, title: "时间", defaultOrder: 0, defaultVisibility: true, layoutRole: .regular),
-        .init(id: .quickNote, title: "快速便签", defaultOrder: 1, defaultVisibility: true, layoutRole: .regular),
-        .init(id: .audioRecorder, title: "录音", defaultOrder: 2, defaultVisibility: true, layoutRole: .regular),
-        .init(id: .camera, title: "摄像头检查", defaultOrder: 3, defaultVisibility: true, layoutRole: .regular),
-        .init(id: .recentApplications, title: "最近使用", defaultOrder: 4, defaultVisibility: true, layoutRole: .regular)
+        .init(id: .clock, title: "时间", defaultOrder: 0, defaultVisibility: true, defaultSize: .small, allowedSizes: [.small, .medium]),
+        .init(id: .quickNote, title: "快速便签", defaultOrder: 1, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .memo, title: "备忘录", defaultOrder: 2, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .audioRecorder, title: "录音", defaultOrder: 3, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .camera, title: "镜子", defaultOrder: 4, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .recentApplications, title: "最近使用", defaultOrder: 5, defaultVisibility: true, defaultSize: .small, allowedSizes: [.small, .medium, .large])
     ]
 
     static var orderedIDs: [HomeDashboardModel.WidgetID] {
@@ -31,15 +65,20 @@ enum HomeWidgetRegistry {
 
     static func descriptor(for id: HomeDashboardModel.WidgetID) -> HomeWidgetDescriptor {
         descriptors.first { $0.id == id }
-            ?? .init(id: id, title: id.rawValue, defaultOrder: .max, defaultVisibility: true, layoutRole: .regular)
+            ?? .init(id: id, title: id.rawValue, defaultOrder: .max, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium])
     }
 }
 
 @MainActor
 final class HomeDashboardModel: ObservableObject {
+    // Keep recording alive when the dashboard is hidden or recreated during navigation.
+    let audioRecorder = AudioRecorderModel()
+    let memoLibrary = MemoLibraryModel()
+
     enum WidgetID: String, CaseIterable, Identifiable {
         case clock
         case quickNote
+        case memo
         case audioRecorder
         case camera
         case recentApplications
@@ -66,17 +105,27 @@ final class HomeDashboardModel: ObservableObject {
     }
 
     @Published var quickNote: String {
-        didSet { scheduleQuickNoteSave() }
+        didSet { if quickNote != oldValue { scheduleQuickNoteSave() } }
     }
     @Published private(set) var quickNoteSaveStatus: QuickNoteSaveStatus = .saved
     @Published private(set) var widgetOrder: [WidgetID]
     @Published private(set) var hiddenWidgets: Set<WidgetID>
+    @Published private(set) var widgetSizes: [WidgetID: HomeWidgetSize]
     @Published private(set) var editingWidget: WidgetID?
+    @Published private(set) var mirrorPhotoURL: URL?
+    @Published private(set) var mirrorPhotoError: String?
+    @Published private(set) var isLoadingMirrorPhoto = false
+    @Published var mirrorAspect: MirrorAspect {
+        didSet { defaults.set(mirrorAspect.rawValue, forKey: Key.mirrorAspect) }
+    }
+    @Published var memoLibraryOpen = false
 
     private enum Key {
         static let quickNote = "home.quickNote"
         static let widgetOrder = "home.widgetOrder"
         static let hiddenWidgets = "home.hiddenWidgets"
+        static let widgetSizes = "home.widgetSizes"
+        static let mirrorAspect = "home.mirrorAspect"
     }
 
     private let defaults: UserDefaults
@@ -84,6 +133,7 @@ final class HomeDashboardModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        mirrorAspect = MirrorAspect(rawValue: defaults.string(forKey: Key.mirrorAspect) ?? "") ?? .automatic
         quickNote = defaults.string(forKey: Key.quickNote) ?? ""
 
         let registeredIDs = HomeWidgetRegistry.orderedIDs
@@ -97,7 +147,20 @@ final class HomeDashboardModel: ObservableObject {
             !HomeWidgetRegistry.descriptor(for: $0).defaultVisibility
         }
         hiddenWidgets = Set(hidden.compactMap(WidgetID.init(rawValue:))).union(defaultHidden)
+        let savedSizes = defaults.dictionary(forKey: Key.widgetSizes) as? [String: String] ?? [:]
+        widgetSizes = Dictionary(uniqueKeysWithValues: registeredIDs.map { widget in
+            let descriptor = HomeWidgetRegistry.descriptor(for: widget)
+            let saved = savedSizes[widget.rawValue].flatMap(HomeWidgetSize.init(rawValue:))
+            let resolved = saved.flatMap { descriptor.allowedSizes.contains($0) ? $0 : nil }
+                ?? descriptor.defaultSize
+            return (widget, resolved)
+        })
         editingWidget = nil
+        mirrorPhotoURL = Self.existingMirrorPhotoURL()
+        mirrorPhotoError = nil
+        if mirrorPhotoURL == nil {
+            Task { await randomizeMirrorPhoto() }
+        }
     }
 
     var visibleWidgets: [WidgetID] {
@@ -110,6 +173,17 @@ final class HomeDashboardModel: ObservableObject {
         guard target != index else { return }
         widgetOrder.remove(at: index)
         widgetOrder.insert(widget, at: target)
+        persistLayout()
+    }
+
+    func move(_ widget: WidgetID, to targetWidget: WidgetID) {
+        guard widget != targetWidget,
+              let sourceIndex = widgetOrder.firstIndex(of: widget),
+              let targetIndex = widgetOrder.firstIndex(of: targetWidget)
+        else { return }
+        widgetOrder.remove(at: sourceIndex)
+        widgetOrder.insert(widget, at: min(targetIndex, widgetOrder.count))
+        editingWidget = widget
         persistLayout()
     }
 
@@ -143,12 +217,96 @@ final class HomeDashboardModel: ObservableObject {
         persistLayout()
     }
 
+    func size(for widget: WidgetID) -> HomeWidgetSize {
+        widgetSizes[widget] ?? HomeWidgetRegistry.descriptor(for: widget).defaultSize
+    }
+
+    func setSize(_ size: HomeWidgetSize, for widget: WidgetID) {
+        guard HomeWidgetRegistry.descriptor(for: widget).allowedSizes.contains(size) else { return }
+        widgetSizes[widget] = size
+        persistLayout()
+    }
+
+    func stepSize(for widget: WidgetID, direction: Int = 1) {
+        let allowed = HomeWidgetRegistry.descriptor(for: widget).allowedSizes
+        guard allowed.count > 1, let index = allowed.firstIndex(of: size(for: widget)) else { return }
+        let target = min(max(index + direction, 0), allowed.count - 1)
+        guard target != index else { return }
+        setSize(allowed[target], for: widget)
+    }
+
+    func chooseMirrorPhoto() {
+        guard !isLoadingMirrorPhoto else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff, .image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "选择照片"
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        do {
+            let extensionName = sourceURL.pathExtension.isEmpty ? "png" : sourceURL.pathExtension.lowercased()
+            try installMirrorPhoto(Data(contentsOf: sourceURL), extensionName: extensionName)
+        } catch {
+            mirrorPhotoError = "无法保存照片：\(error.localizedDescription)"
+        }
+    }
+
+    func randomizeMirrorPhoto() async {
+        guard !isLoadingMirrorPhoto else { return }
+        isLoadingMirrorPhoto = true
+        mirrorPhotoError = nil
+        defer { isLoadingMirrorPhoto = false }
+        do {
+            let url = URL(string: "https://picsum.photos/seed/\(UUID().uuidString)/1600/900.jpg")!
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            try installMirrorPhoto(data, extensionName: "jpg")
+        } catch {
+            mirrorPhotoError = "随机照片加载失败，请重试或选择本地照片。"
+        }
+    }
+
+    private func installMirrorPhoto(_ data: Data, extensionName: String) throws {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceCreateImageAtIndex(source, 0, nil) != nil else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let directory = try Self.mirrorDirectory()
+        let destination = directory.appendingPathComponent("cover.\(UUID().uuidString).\(extensionName)")
+        try data.write(to: destination, options: .atomic)
+        let oldURL = mirrorPhotoURL
+        mirrorPhotoURL = destination
+        mirrorPhotoError = nil
+        if let oldURL { try? FileManager.default.removeItem(at: oldURL) }
+    }
+
+    func removeMirrorPhoto() {
+        guard !isLoadingMirrorPhoto else { return }
+        guard let mirrorPhotoURL else { return }
+        do {
+            try FileManager.default.removeItem(at: mirrorPhotoURL)
+            self.mirrorPhotoURL = nil
+            mirrorPhotoError = nil
+        } catch {
+            mirrorPhotoError = "无法删除照片：\(error.localizedDescription)"
+        }
+    }
+
     private func persistLayout() {
         defaults.set(widgetOrder.map(\.rawValue), forKey: Key.widgetOrder)
         defaults.set(hiddenWidgets.map(\.rawValue).sorted(), forKey: Key.hiddenWidgets)
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: widgetSizes.map { ($0.key.rawValue, $0.value.rawValue) }),
+            forKey: Key.widgetSizes
+        )
     }
 
     func flushQuickNote() {
+        guard quickNoteSaveStatus != .saved else { return }
         quickNoteSaveWorkItem?.cancel()
         quickNoteSaveWorkItem = nil
         persistQuickNote(quickNote)
@@ -173,30 +331,50 @@ final class HomeDashboardModel: ObservableObject {
         quickNoteSaveWorkItem = nil
         quickNoteSaveStatus = defaults.string(forKey: Key.quickNote) == value ? .saved : .failed
     }
+
+    private static func mirrorDirectory() throws -> URL {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("ClipFlow", isDirectory: true)
+            .appendingPathComponent("Mirror", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+        return directory
+    }
+
+    private static func existingMirrorPhotoURL() -> URL? {
+        guard let directory = try? mirrorDirectory(),
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return nil }
+        return files.first { $0.lastPathComponent.hasPrefix("cover.") }
+    }
 }
 
 struct HomeDashboardView: View {
     @ObservedObject var model: HomeDashboardModel
     @ObservedObject var applicationsModel: ApplicationsModel
+    @ObservedObject var audioRecorderModel: AudioRecorderModel
+    @ObservedObject var memoModel: MemoLibraryModel
     let onOpenApplications: () -> Void
 
     @StateObject private var cameraModel = CameraCheckModel()
-    @StateObject private var audioRecorderModel = AudioRecorderModel()
     @State private var editingWidgets = false
+    @State private var draggedWidget: HomeDashboardModel.WidgetID?
+    @State private var dropTargetWidget: HomeDashboardModel.WidgetID?
     @FocusState private var noteFocused: Bool
     @FocusState private var focusedWidget: HomeDashboardModel.WidgetID?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("今天也是高效的一天")
-                        .font(.system(size: 10.5))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("工作台")
+                        .font(.system(size: 19, weight: .semibold))
+                        .tracking(-0.5)
+                    Text("\(greeting) · \(Date.now.formatted(.dateTime.month().day().weekday(.wide)))")
+                        .font(.system(size: 11))
                         .foregroundStyle(theme.muted)
-                    Text(greeting)
-                        .font(.system(size: 18, weight: .semibold))
                 }
                 Spacer()
                 Button {
@@ -210,48 +388,43 @@ struct HomeDashboardView: View {
                     } else {
                         model.finishEditingWidgets()
                         focusedWidget = nil
+                        draggedWidget = nil
+                        dropTargetWidget = nil
                     }
                 } label: {
                     Label(editingWidgets ? "完成" : "管理组件", systemImage: editingWidgets ? "checkmark" : "slider.horizontal.3")
                 }
                 .buttonStyle(GlassButtonStyle(kind: editingWidgets ? .primary : .normal))
                 .fixedSize()
+                .help("排序、调整大小与恢复已隐藏的组件")
             }
             .padding(.horizontal, 18)
-            .frame(height: 72)
-
-            Divider().overlay(theme.weakHairline)
+            .frame(height: 64)
 
             GeometryReader { proxy in
                 ScrollView(.vertical) {
                     VStack(spacing: 12) {
-                        if !model.hiddenWidgets.isEmpty {
+                        if editingWidgets && !model.hiddenWidgets.isEmpty {
                             restoreBar(theme)
+                                .transition(.opacity)
                         }
 
-                        LazyVGrid(
-                            columns: proxy.size.width >= 720
-                                ? [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
-                                : [GridItem(.flexible())],
-                            spacing: 12
-                        ) {
-                            ForEach(model.visibleWidgets) { widget in
-                                widgetView(widget, theme: theme)
-                                    .frame(minHeight: 176)
-                                    .focusable(editingWidgets)
-                                    .focused($focusedWidget, equals: widget)
-                                    .onTapGesture {
-                                        guard editingWidgets else { return }
-                                        model.selectWidget(widget)
-                                        focusedWidget = widget
-                                    }
-                            }
-                        }
+                        adaptiveWidgetGrid(columns: proxy.size.width >= 840 ? 3 : proxy.size.width >= 560 ? 2 : 1, theme: theme)
                     }
-                    .padding(18)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 18)
+                    .padding(.top, 4)
+                    .animation(reduceMotion ? nil : FlowMotion.layout, value: model.hiddenWidgets)
                 }
             }
         }
+        .overlay {
+            if model.memoLibraryOpen {
+                MemoLibraryOverlay(model: memoModel) { model.memoLibraryOpen = false }
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.memoLibraryOpen)
         .onReceive(NotificationCenter.default.publisher(for: .jaimoFocusQuickNote)) { _ in
             noteFocused = true
         }
@@ -260,7 +433,9 @@ struct HomeDashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .jaimoStopLocalDevices)) { _ in
             cameraModel.stop()
-            audioRecorderModel.finishIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .jaimoFlushMemos)) { _ in
+            memoModel.flush()
         }
         .onChange(of: focusedWidget) { focused in
             guard editingWidgets, let focused else { return }
@@ -268,21 +443,112 @@ struct HomeDashboardView: View {
         }
         .onChange(of: model.hiddenWidgets) { hidden in
             if hidden.contains(.camera) { cameraModel.stop() }
-            if hidden.contains(.audioRecorder) { audioRecorderModel.finishIfNeeded() }
         }
         .onDisappear {
             cameraModel.stop()
-            audioRecorderModel.finishIfNeeded()
             model.flushQuickNote()
+            memoModel.flush()
+        }
+    }
+
+    private var mirrorAspectRatio: CGFloat {
+        guard cameraModel.isRunning else { return 16 / 9 }
+        switch model.mirrorAspect {
+        case .landscape: return 16 / 9
+        case .portrait: return 9 / 16
+        case .automatic: return 16 / 9
+        }
+    }
+
+    private func adaptiveWidgetGrid(columns: Int, theme: ClipFlowTheme) -> some View {
+        HomeWidgetLayout(columns: columns, spacing: 12) {
+            ForEach(model.visibleWidgets) { widget in
+                widgetCell(widget, theme: theme)
+                    .layoutValue(key: HomeWidgetSpan.self, value: model.size(for: widget) == .large ? 2 : 1)
+                    .layoutValue(key: HomeWidgetHeight.self, value: widget == .recentApplications
+                        ? max(HomeWidgetSize.medium.cardHeight, model.size(for: widget).cardHeight)
+                        : model.size(for: widget).cardHeight)
+                    .layoutValue(key: HomeWidgetAspectRatio.self, value: widget == .camera ? mirrorAspectRatio : 0)
+                    .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
+                    .zIndex(model.editingWidget == widget ? 1 : 0)
+            }
+        }
+        .animation(reduceMotion ? nil : FlowMotion.layout, value: model.widgetOrder)
+        .animation(reduceMotion ? nil : FlowMotion.layout, value: model.widgetSizes)
+        .animation(reduceMotion ? nil : FlowMotion.layout, value: model.hiddenWidgets)
+        .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: editingWidgets)
+        .animation(reduceMotion ? nil : FlowMotion.layout, value: mirrorAspectRatio)
+    }
+
+    @ViewBuilder
+    private func widgetCell(_ widget: HomeDashboardModel.WidgetID, theme: ClipFlowTheme) -> some View {
+        if editingWidgets {
+            baseWidgetCell(widget, theme: theme)
+                .opacity(draggedWidget == widget ? 0.58 : 1)
+                .overlay(alignment: .top) {
+                    if dropTargetWidget == widget {
+                        Capsule()
+                            .fill(theme.accent)
+                            .frame(height: 3)
+                            .padding(.horizontal, 14)
+                            .offset(y: -7)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onDrag {
+                    draggedWidget = widget
+                    dropTargetWidget = nil
+                    model.selectWidget(widget)
+                    focusedWidget = widget
+                    return NSItemProvider(object: widget.rawValue as NSString)
+                }
+                .onDrop(
+                    of: [UTType.plainText],
+                    isTargeted: dropTargetBinding(for: widget)
+                ) { _ in
+                    guard let draggedWidget else { return false }
+                    model.move(draggedWidget, to: widget)
+                    self.draggedWidget = nil
+                    dropTargetWidget = nil
+                    focusedWidget = draggedWidget
+                    return true
+                }
+        } else {
+            baseWidgetCell(widget, theme: theme)
+        }
+    }
+
+    private func baseWidgetCell(_ widget: HomeDashboardModel.WidgetID, theme: ClipFlowTheme) -> some View {
+        widgetView(widget, theme: theme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(HomeWidgetFocus(editing: editingWidgets))
+            .focused($focusedWidget, equals: widget)
+            .onTapGesture {
+                guard editingWidgets else { return }
+                model.selectWidget(widget)
+                focusedWidget = widget
+            }
+    }
+
+    private func dropTargetBinding(for widget: HomeDashboardModel.WidgetID) -> Binding<Bool> {
+        Binding {
+            dropTargetWidget == widget
+        } set: { isTargeted in
+            if isTargeted, draggedWidget != nil, draggedWidget != widget {
+                dropTargetWidget = widget
+            } else if !isTargeted, dropTargetWidget == widget {
+                dropTargetWidget = nil
+            }
         }
     }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
-        if hour < 6 { return "夜深了，Jaimo Flow" }
-        if hour < 12 { return "上午好，Jaimo Flow" }
-        if hour < 18 { return "下午好，Jaimo Flow" }
-        return "晚上好，Jaimo Flow"
+        if hour < 6 { return "夜深了" }
+        if hour < 12 { return "上午好" }
+        if hour < 18 { return "下午好" }
+        return "晚上好"
     }
 
     private func restoreBar(_ theme: ClipFlowTheme) -> some View {
@@ -291,17 +557,15 @@ struct HomeDashboardView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(theme.muted)
             ForEach(model.widgetOrder.filter { model.hiddenWidgets.contains($0) }) { widget in
-                Button(widget.title) { model.restore(widget) }
+                Button { model.restore(widget) } label: {
+                    Label(widget.title, systemImage: "plus")
+                }
                     .buttonStyle(GlassButtonStyle(kind: .normal))
                     .fixedSize()
             }
             Spacer(minLength: 0)
         }
         .padding(10)
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(theme.hairline, style: StrokeStyle(lineWidth: 0.5, dash: [4, 4]))
-        )
     }
 
     @ViewBuilder
@@ -318,7 +582,7 @@ struct HomeDashboardView: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(context.date, format: .dateTime.hour().minute())
-                            .font(.system(size: 44, weight: .semibold))
+                            .font(.system(size: 34, weight: .semibold))
                             .monospacedDigit()
                         Text(context.date.formatted(.dateTime.year().month(.wide).day().weekday(.wide)))
                             .font(.system(size: 12))
@@ -334,7 +598,7 @@ struct HomeDashboardView: View {
         case .quickNote:
             IslandWidgetCard(
                 title: widget.title,
-                subtitle: model.quickNoteSaveStatus.text,
+                subtitle: model.quickNoteSaveStatus == .saved ? nil : model.quickNoteSaveStatus.text,
                 widget: widget,
                 editing: editingWidgets,
                 model: model
@@ -350,18 +614,90 @@ struct HomeDashboardView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(theme.muted)
                                 .padding(.horizontal, 5)
-                                .padding(.vertical, 8)
                                 .allowsHitTesting(false)
                         }
                     }
-                    .frame(minHeight: 112)
+                    .frame(minHeight: 80)
                     .accessibilityLabel("快速便签")
+            }
+
+        case .memo:
+            IslandWidgetCard(
+                title: widget.title,
+                subtitle: nil,
+                widget: widget,
+                editing: editingWidgets,
+                model: model
+            ) {
+                VStack(spacing: 7) {
+                    if memoModel.items.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 21))
+                                .foregroundStyle(theme.muted)
+                            Text("记录需要长期保留的事情")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(theme.foregroundSecondary)
+                            Button("新建备忘录") {
+                                memoModel.createMemo()
+                                model.memoLibraryOpen = true
+                            }
+                            .buttonStyle(GlassButtonStyle(kind: .primary))
+                            .fixedSize()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ForEach(memoModel.sortedItems.prefix(model.size(for: widget) == .large ? 3 : 2)) { memo in
+                            Button {
+                                memoModel.selectedID = memo.id
+                                model.memoLibraryOpen = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: memo.isPinned ? "pin.fill" : "note.text")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(memo.isPinned ? theme.star : theme.muted)
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(memo.title.isEmpty ? "无标题备忘录" : memo.title)
+                                            .font(.system(size: 11.5, weight: .medium))
+                                            .lineLimit(1)
+                                        Text(memo.body.isEmpty ? "暂无正文" : memo.body.replacingOccurrences(of: "\n", with: " "))
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(theme.muted)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(theme.muted)
+                                }
+                                .padding(7)
+                                .contentShape(RoundedRectangle(cornerRadius: 9))
+                            }
+                            .buttonStyle(IslandRecentRowStyle())
+                        }
+                        HStack {
+                            Button {
+                                memoModel.createMemo()
+                                model.memoLibraryOpen = true
+                            } label: {
+                                Label("新建", systemImage: "plus")
+                            }
+                            .buttonStyle(GlassButtonStyle(kind: .normal))
+                            .fixedSize()
+                            Button("打开全部") { model.memoLibraryOpen = true }
+                                .buttonStyle(GlassButtonStyle(kind: .quiet))
+                                .fixedSize()
+                            Spacer()
+                        }
+                    }
+                }
             }
 
         case .audioRecorder:
             IslandWidgetCard(
                 title: widget.title,
-                subtitle: audioRecorderModel.statusText,
+                subtitle: nil,
                 widget: widget,
                 editing: editingWidgets,
                 model: model
@@ -370,65 +706,62 @@ struct HomeDashboardView: View {
             }
 
         case .camera:
-            IslandWidgetCard(
-                title: widget.title,
-                subtitle: cameraModel.statusText,
+            MirrorWidgetCard(
                 widget: widget,
                 editing: editingWidgets,
                 model: model
             ) {
-                HStack(spacing: 14) {
-                    VStack(alignment: .leading, spacing: 9) {
-                        Text("会议前快速确认画面")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("画面只在本机预览，不录制、不保存、不上传。")
-                            .font(.system(size: 11))
+                Group {
+                    if cameraModel.isRunning {
+                        CameraPreviewView(session: cameraModel.session)
+                    } else if let photoURL = model.mirrorPhotoURL {
+                        CachedDiskImage(url: photoURL, maxPixelSize: 1000, contentMode: .fill)
+                            .id(photoURL)
+                    } else if model.isLoadingMirrorPhoto {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.system(size: 28))
                             .foregroundStyle(theme.muted)
-                            .lineSpacing(4)
-
-                        HStack(spacing: 7) {
-                            Button {
-                                cameraModel.isRunning ? cameraModel.stop() : cameraModel.start()
-                            } label: {
-                                Label(cameraModel.isRunning ? "停止预览" : "启动摄像头", systemImage: "video")
-                            }
-                            .buttonStyle(GlassButtonStyle(kind: .primary))
-                            .fixedSize()
-
-                            if cameraModel.canOpenSettings {
-                                Button("打开系统设置", action: cameraModel.openPrivacySettings)
-                                    .buttonStyle(GlassButtonStyle(kind: .normal))
-                                    .fixedSize()
-                            }
-                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Group {
-                        if cameraModel.isRunning {
-                            CameraPreviewView(session: cameraModel.session)
-                        } else {
-                            VStack(spacing: 7) {
-                                Image(systemName: "video.slash")
-                                    .font(.system(size: 20))
-                                Text("预览未开启")
-                                    .font(.system(size: 10.5))
-                            }
-                            .foregroundStyle(theme.muted)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(theme.glassSecondary)
-                        }
-                    }
-                    .frame(width: 150, height: 112)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.hairline, lineWidth: 0.5))
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard !editingWidgets else { return }
+                    toggleMirror()
+                }
+                .contextMenu {
+                    MirrorAspectMenu(model: model)
+                    Divider()
+                    Button("随机换一张") {
+                        Task { await model.randomizeMirrorPhoto() }
+                    }
+                    .disabled(model.isLoadingMirrorPhoto)
+                    Button(model.mirrorPhotoURL == nil ? "选择照片" : "替换照片") {
+                        model.chooseMirrorPhoto()
+                    }
+                    .disabled(model.isLoadingMirrorPhoto)
+                    if model.mirrorPhotoURL != nil {
+                        Button("删除照片", role: .destructive) {
+                            model.removeMirrorPhoto()
+                        }
+                        .disabled(model.isLoadingMirrorPhoto)
+                    }
+                    if cameraModel.canOpenSettings {
+                        Divider()
+                        Button("打开摄像头设置", action: cameraModel.openPrivacySettings)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(cameraModel.isRunning ? "镜子实时画面" : "镜子照片")
+                .accessibilityHint(cameraModel.isRunning ? "点击关闭摄像头；右键管理照片" : "点击打开摄像头；右键管理照片")
             }
 
         case .recentApplications:
             IslandWidgetCard(
                 title: widget.title,
-                subtitle: "从 Jaimo Flow 启动的本机应用",
+                subtitle: nil,
                 widget: widget,
                 editing: editingWidgets,
                 model: model
@@ -445,7 +778,7 @@ struct HomeDashboardView: View {
                             .buttonStyle(GlassButtonStyle(kind: .normal))
                             .fixedSize()
                     }
-                    .frame(maxWidth: .infinity, minHeight: 110)
+                    .frame(maxWidth: .infinity, minHeight: 90)
                 } else {
                     VStack(spacing: 4) {
                         ForEach(applicationsModel.recentApplications.prefix(3)) { application in
@@ -481,11 +814,75 @@ struct HomeDashboardView: View {
             }
         }
     }
+
+    private func toggleMirror() {
+        cameraModel.isRunning ? cameraModel.stop() : cameraModel.start()
+    }
+
+
+}
+
+/// Keep keyboard selection without the system's prominent blue focus ring.
+private struct HomeWidgetFocus: ViewModifier {
+    let editing: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.focusable(editing).focusEffectDisabled()
+        } else {
+            // Older systems cannot suppress the card ring; its menu and buttons
+            // remain keyboard accessible without focusing the entire card.
+            content
+        }
+    }
+}
+
+private struct MirrorWidgetCard<Content: View>: View {
+    let widget: HomeDashboardModel.WidgetID
+    let editing: Bool
+    @ObservedObject var model: HomeDashboardModel
+    @ViewBuilder let content: () -> Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        GeometryReader { proxy in
+            content()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            .background(theme.card)
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(editing ? (model.editingWidget == widget ? theme.foreground.opacity(0.18) : theme.hairline) : .clear, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if editing {
+                    HStack(spacing: 2) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(theme.muted)
+                            .frame(width: 22, height: 26)
+                            .accessibilityLabel("拖动镜子组件调整顺序")
+                            .help("拖动组件调整顺序")
+                        HomeWidgetMenu(widget: widget, model: model)
+                    }
+                    .padding(7)
+                    .background(theme.glassSecondary.opacity(0.94))
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .padding(8)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("镜子组件")
+            .accessibilityHint(editing ? "拖动整张组件调整顺序，尺寸菜单可调整占用宽度" : "")
+        }
+    }
 }
 
 private struct IslandWidgetCard<Content: View>: View {
     let title: String
-    let subtitle: String
+    let subtitle: String?
     let widget: HomeDashboardModel.WidgetID
     let editing: Bool
     @ObservedObject var model: HomeDashboardModel
@@ -498,62 +895,129 @@ private struct IslandWidgetCard<Content: View>: View {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.system(size: 12.5, weight: .semibold))
-                    Text(subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(2)
+                        .font(.system(size: 13, weight: .semibold))
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 6)
                 if editing {
                     HStack(spacing: 2) {
-                        editButton("arrow.up", label: "向前移动 \(title)") { model.move(widget, by: -1) }
-                        editButton("arrow.down", label: "向后移动 \(title)") { model.move(widget, by: 1) }
-                        editButton("eye.slash", label: "隐藏 \(title)") { model.hide(widget) }
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(theme.muted)
+                            .frame(width: 22, height: 26)
+                            .accessibilityLabel("拖动 \(title) 组件调整顺序")
+                            .help("拖动组件调整顺序")
+                        HomeWidgetMenu(widget: widget, model: model)
                     }
                 }
             }
             content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(16)
-        .background(theme.glassSecondary.opacity(0.72))
+        .padding(14)
+        .background(theme.card)
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    editing && model.editingWidget == widget ? theme.accent.opacity(0.72) : theme.hairline,
-                    style: editing
-                        ? StrokeStyle(lineWidth: model.editingWidget == widget ? 1.2 : 0.7, dash: [4, 4])
-                        : StrokeStyle(lineWidth: 0.5)
-                )
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(editing ? (model.editingWidget == widget ? theme.foreground.opacity(0.18) : theme.hairline) : .clear, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if editing, HomeWidgetRegistry.descriptor(for: widget).allowedSizes.count > 1 {
+                Button { model.stepSize(for: widget) } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(FlowIconButtonStyle())
+                .padding(7)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 8).onEnded { value in
+                        let outward = value.translation.width + value.translation.height
+                        model.stepSize(for: widget, direction: outward >= 0 ? 1 : -1)
+                    }
+                )
+                .accessibilityLabel("调整 \(title) 组件尺寸")
+                .accessibilityHint("点击扩大，或拖动手柄在可用档位之间调整")
+                .help("拖动调整组件尺寸")
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title)组件")
-        .accessibilityHint(editing ? "按 Option 加上下方向键调整顺序" : "")
-    }
-
-    private func editButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10.5))
-                .frame(width: 26, height: 26)
-        }
-        .buttonStyle(IslandWidgetEditButtonStyle())
-        .accessibilityLabel(label)
-        .help(label)
+        .accessibilityHint(editing ? "拖动整张组件卡片调整顺序，尺寸菜单或右下角手柄可调整大小" : "")
     }
 }
 
-private struct IslandWidgetEditButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
+private struct MirrorAspectMenu: View {
+    @ObservedObject var model: HomeDashboardModel
 
-    func makeBody(configuration: Configuration) -> some View {
-        let theme = ClipFlowTheme(scheme: colorScheme)
-        configuration.label
-            .foregroundStyle(theme.muted)
-            .background(configuration.isPressed ? theme.chipHigh : theme.chip)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+    var body: some View {
+        Picker("画面比例", selection: $model.mirrorAspect) {
+            ForEach(MirrorAspect.allCases) { aspect in
+                Text(aspect.title).tag(aspect)
+            }
+        }
+    }
+}
+
+private struct HomeWidgetMenu: View {
+    let widget: HomeDashboardModel.WidgetID
+    @ObservedObject var model: HomeDashboardModel
+
+    var body: some View {
+        Menu {
+            if widget == .camera {
+                MirrorAspectMenu(model: model)
+                Divider()
+            }
+            Section("组件尺寸") {
+                ForEach(HomeWidgetRegistry.descriptor(for: widget).allowedSizes) { size in
+                    Button {
+                        model.selectWidget(widget)
+                        model.setSize(size, for: widget)
+                    } label: {
+                        if model.size(for: widget) == size {
+                            Label(size.title, systemImage: "checkmark")
+                        } else {
+                            Text(size.title)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button { move(by: -1) } label: {
+                Label("向前移动", systemImage: "arrow.up")
+            }
+            .disabled(model.visibleWidgets.first == widget)
+            Button { move(by: 1) } label: {
+                Label("向后移动", systemImage: "arrow.down")
+            }
+            .disabled(model.visibleWidgets.last == widget)
+            Divider()
+            Button { model.hide(widget) } label: {
+                Label("隐藏组件", systemImage: "eye.slash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("\(widget.title)组件选项")
+        .help("调整大小、移动或隐藏组件")
+    }
+
+    private func move(by offset: Int) {
+        let visible = model.visibleWidgets
+        guard let index = visible.firstIndex(of: widget), visible.indices.contains(index + offset) else { return }
+        model.move(widget, to: visible[index + offset])
     }
 }
 
@@ -565,6 +1029,7 @@ private struct IslandRecentRowStyle: ButtonStyle {
         configuration.label
             .background(configuration.isPressed ? theme.chipHigh : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .modifier(FlowControlFeedback(isPressed: configuration.isPressed, cornerRadius: 10, hoverFill: theme.chip, pressedScale: 0.99))
     }
 }
 

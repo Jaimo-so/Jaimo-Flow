@@ -77,6 +77,17 @@ final class ClipboardMonitor {
         return .text(characterCount: text.count)
     }
 
+    func write(secret: String) -> WriteResult {
+        let item = NSPasteboardItem()
+        item.setString(secret, forType: .string)
+        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([item]) else { return .failure }
+        ignoredChangeCount = pasteboard.changeCount
+        lastChangeCount = pasteboard.changeCount
+        return .text(characterCount: secret.count)
+    }
+
     private func poll() {
         let currentChangeCount = pasteboard.changeCount
         guard currentChangeCount != lastChangeCount else { return }
@@ -84,6 +95,10 @@ final class ClipboardMonitor {
 
         if ignoredChangeCount == currentChangeCount {
             ignoredChangeCount = nil
+            return
+        }
+
+        if pasteboard.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) == true {
             return
         }
 
