@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 enum ToolDestination: String, CaseIterable, Identifiable {
@@ -6,6 +7,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
     case applications
     case prompts
     case clipboard
+    case vibehub
 
     var id: String { rawValue }
 
@@ -15,6 +17,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .applications: return "应用"
         case .prompts: return "提示词"
         case .clipboard: return "剪切板"
+        case .vibehub: return "Vibehub"
         }
     }
 
@@ -24,6 +27,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .applications: return "square.grid.2x2"
         case .prompts: return "sparkles"
         case .clipboard: return "doc.on.clipboard"
+        case .vibehub: return "text.bubble"
         }
     }
 }
@@ -36,6 +40,13 @@ final class IslandShellModel: ObservableObject {
 
     private static let destinationKey = "island.lastDestination"
     private let defaults: UserDefaults
+    lazy var vibeHubLibrary = VibeHubLibraryModel()
+    private var vibeHubAgentSubscription: AnyCancellable?
+    lazy var vibeHubAgent: VibeHubAgentModel = {
+        let agent = VibeHubAgentModel(library: vibeHubLibrary, defaults: defaults)
+        vibeHubAgentSubscription = agent.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        return agent
+    }()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -104,6 +115,7 @@ struct IslandRootView: View {
             || model.credentialEditorOpen
             || model.credentialDeleteConfirmationOpen
             || homeModel.memoLibraryOpen
+            || (shell.destination == .vibehub && shell.vibeHubAgent.panel != .closed)
     }
 
     private func topBar(_ theme: ClipFlowTheme) -> some View {
@@ -111,7 +123,7 @@ struct IslandRootView: View {
             HStack(spacing: proxy.size.width < 720 ? 8 : 18) {
                 HStack(spacing: 9) {
                     IslandBrandMark(size: 28)
-                    if proxy.size.width >= 720 {
+                    if proxy.size.width >= 820 {
                         Text("Jaimo Flow")
                             .font(.system(size: 13, weight: .semibold))
                     }
@@ -129,10 +141,12 @@ struct IslandRootView: View {
                                 if proxy.size.width >= 650 {
                                     Text(destination.title)
                                         .font(.system(size: 12, weight: shell.destination == destination ? .semibold : .regular))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
                                 }
                             }
                             .foregroundStyle(shell.destination == destination ? theme.foreground : theme.muted)
-                            .frame(minWidth: proxy.size.width >= 650 ? 70 : 42, maxHeight: .infinity)
+                            .frame(minWidth: proxy.size.width >= 650 ? (destination == .vibehub ? 86 : 70) : 42, maxHeight: .infinity)
                             .background {
                                 if shell.destination == destination {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -212,11 +226,14 @@ struct IslandRootView: View {
         case .clipboard:
             ContentView(model: model, fixedMode: .history, embedded: true)
                 .id("clipboard-library")
+        case .vibehub:
+            VibeHubLibraryView(library: shell.vibeHubLibrary, appModel: model, agent: shell.vibeHubAgent)
         }
     }
 
     private func selectDestination(_ destination: ToolDestination) {
         guard shell.destination != destination else { return }
+        if shell.destination == .vibehub { shell.vibeHubLibrary.flush() }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -224,7 +241,7 @@ struct IslandRootView: View {
             switch destination {
             case .prompts: model.setMode(.prompts)
             case .clipboard: model.setMode(.history)
-            case .home, .applications: break
+            case .home, .applications, .vibehub: break
             }
         }
     }
@@ -303,4 +320,6 @@ extension Notification.Name {
     static let jaimoFocusApplicationSearch = Notification.Name("jaimo.focusApplicationSearch")
     static let jaimoStopLocalDevices = Notification.Name("jaimo.stopLocalDevices")
     static let jaimoFlushMemos = Notification.Name("jaimo.flushMemos")
+    static let jaimoFocusVibeHubSearch = Notification.Name("jaimo.focusVibeHubSearch")
+    static let jaimoFocusVibeHubTitle = Notification.Name("jaimo.focusVibeHubTitle")
 }

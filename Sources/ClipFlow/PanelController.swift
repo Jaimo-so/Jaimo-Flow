@@ -138,6 +138,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         let generation = visibilityGeneration
         releaseLocalDevices()
         homeModel.flushQuickNote()
+        if shellModel.destination == .vibehub {
+            shellModel.vibeHubLibrary.flush()
+            shellModel.vibeHubAgent.discardSession()
+        }
         model.cancelCredentialEditor()
         model.credentialDeleteConfirmationOpen = false
         // Stop accepting input immediately; the remaining fade is only visual.
@@ -165,6 +169,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         releaseLocalDevices()
         homeModel.flushQuickNote()
         NotificationCenter.default.post(name: .jaimoFlushMemos, object: nil)
+        if shellModel.destination == .vibehub {
+            shellModel.vibeHubLibrary.flush()
+            shellModel.vibeHubAgent.discardSession()
+        }
     }
 
     private func present(size: NSSize) {
@@ -252,6 +260,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func selectDestination(_ destination: ToolDestination) {
+        if shellModel.destination == .vibehub { shellModel.vibeHubLibrary.flush() }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -261,7 +270,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             switch destination {
             case .prompts: model.setMode(.prompts)
             case .clipboard: model.setMode(.history)
-            case .home, .applications: break
+            case .home, .applications, .vibehub: break
             }
         }
     }
@@ -303,6 +312,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             || model.credentialEditorOpen
             || model.credentialDeleteConfirmationOpen
             || homeModel.memoLibraryOpen
+            || (shellModel.destination == .vibehub && shellModel.vibeHubAgent.panel != .closed)
     }
 
     private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String) -> Bool {
@@ -318,6 +328,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         if command && key == "q" {
             NSApp.terminate(nil)
             return true
+        }
+
+        if shellModel.destination == .vibehub, shellModel.vibeHubAgent.panel != .closed {
+            if keyCode == UInt16(kVK_Escape) {
+                shellModel.vibeHubAgent.dismissPanel()
+                return true
+            }
+            if command && keyCode == UInt16(kVK_Return) {
+                switch shellModel.vibeHubAgent.panel {
+                case .composer: shellModel.vibeHubAgent.organizeForPreview()
+                case .preview: shellModel.vibeHubAgent.saveReviewedPhrase()
+                case .settings: shellModel.vibeHubAgent.saveSettings()
+                case .closed: break
+                }
+                return true
+            }
+            return false
         }
 
         if command && key == "," {
@@ -414,6 +441,9 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         if command && key == "f" {
             switch shellModel.destination {
+            case .vibehub:
+                NotificationCenter.default.post(name: .jaimoFocusVibeHubSearch, object: nil)
+                return true
             case .applications:
                 NotificationCenter.default.post(name: .jaimoFocusApplicationSearch, object: nil)
                 return true
@@ -438,6 +468,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
 
         if command && key == "n" {
+            if shellModel.destination == .vibehub {
+                if shellModel.vibeHubLibrary.createPhrase() != nil {
+                    NotificationCenter.default.post(name: .jaimoFocusVibeHubTitle, object: nil)
+                }
+                return true
+            }
             showExpanded(destination: .prompts)
             model.beginCreatePrompt()
             return true
@@ -453,9 +489,16 @@ final class PanelController: NSObject, NSWindowDelegate {
                 model.query = ""
             } else if shellModel.destination == .prompts, !model.promptQuery.isEmpty {
                 model.promptQuery = ""
+            } else if shellModel.destination == .vibehub, !shellModel.vibeHubLibrary.query.isEmpty {
+                shellModel.vibeHubLibrary.query = ""
             } else {
                 hide()
             }
+            return true
+        }
+
+        if shellModel.destination == .vibehub, command && key == "s" {
+            shellModel.vibeHubLibrary.flush()
             return true
         }
 
@@ -514,6 +557,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case "2": return .applications
         case "3": return .prompts
         case "4": return .clipboard
+        case "5": return .vibehub
         default: return nil
         }
     }
