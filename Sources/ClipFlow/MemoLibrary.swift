@@ -12,6 +12,11 @@ struct MemoItem: Codable, Identifiable, Equatable {
 
 @MainActor
 final class MemoLibraryModel: ObservableObject {
+    enum CreationError: Error {
+        case unreadableStore
+        case emptyContent
+    }
+
     enum SaveStatus: Equatable {
         case saved
         case saving
@@ -33,6 +38,7 @@ final class MemoLibraryModel: ObservableObject {
     private let fileURL: URL
     private var saveWorkItem: DispatchWorkItem?
     private var hasUnsavedChanges = false
+    private var loadFailed = false
 
     init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? FileManager.default.urls(
@@ -60,11 +66,30 @@ final class MemoLibraryModel: ObservableObject {
 
     @discardableResult
     func createMemo() -> UUID {
+        insertMemo(id: UUID(), title: "新备忘录", body: "")
+    }
+
+    /// App-internal preparation for a future local bridge. One stable ID per task.
+    /// A retry returns the existing Memo without replacing subsequent user edits.
+    /// This is not a transport endpoint or a durable receipt after deletion.
+    @discardableResult
+    func createMemo(id: UUID, title: String, body: String) throws -> UUID {
+        guard !loadFailed else { throw CreationError.unreadableStore }
+        if items.contains(where: { $0.id == id }) { return id }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CreationError.emptyContent
+        }
+        return insertMemo(id: id, title: title, body: body)
+    }
+
+    @discardableResult
+    private func insertMemo(id: UUID, title: String, body: String) -> UUID {
         let now = Date()
         let item = MemoItem(
-            id: UUID(),
-            title: "新备忘录",
-            body: "",
+            id: id,
+            title: title,
+            body: body,
             createdAt: now,
             updatedAt: now,
             isPinned: false
@@ -127,6 +152,7 @@ final class MemoLibraryModel: ObservableObject {
             let data = try Data(contentsOf: fileURL)
             items = try JSONDecoder().decode([MemoItem].self, from: data)
         } catch {
+            loadFailed = true
             saveStatus = .failed
         }
     }
