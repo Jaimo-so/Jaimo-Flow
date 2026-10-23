@@ -115,6 +115,7 @@ struct IslandRootView: View {
             || model.credentialEditorOpen
             || model.credentialDeleteConfirmationOpen
             || homeModel.memoLibraryOpen
+            || homeModel.dailyReviewHistoryOpen
             || (shell.destination == .vibehub && shell.vibeHubAgent.panel != .closed)
     }
 
@@ -319,7 +320,6 @@ extension Notification.Name {
     static let jaimoStartCamera = Notification.Name("jaimo.startCamera")
     static let jaimoFocusApplicationSearch = Notification.Name("jaimo.focusApplicationSearch")
     static let jaimoStopLocalDevices = Notification.Name("jaimo.stopLocalDevices")
-    static let jaimoFlushMemos = Notification.Name("jaimo.flushMemos")
     static let jaimoFocusVibeHubSearch = Notification.Name("jaimo.focusVibeHubSearch")
     static let jaimoFocusVibeHubTitle = Notification.Name("jaimo.focusVibeHubTitle")
 }

@@ -68,8 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        (panelController?.prepareForTermination() ?? true) ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        panelController?.prepareForTermination()
         floatingBallController?.hideBall()
         monitor?.stop()
     }

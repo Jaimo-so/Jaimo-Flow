@@ -18,25 +18,28 @@ final class MemoLibraryModel: ObservableObject {
     }
 
     enum SaveStatus: Equatable {
+        case pending
         case saved
         case saving
         case failed
 
         var text: String {
             switch self {
+            case .pending: return "关闭时保存 · 仅本机"
             case .saved: return "已保存 · 仅本机"
             case .saving: return "正在保存…"
-            case .failed: return "保存失败"
+            case .failed: return "保存失败，内容已保留，请重试"
             }
         }
     }
 
-    @Published private(set) var items: [MemoItem] = []
+    @Published private var records: [MemoItem] = []
+    // Draft text stays out of the published list while the user is typing.
+    private var drafts: [UUID: MemoItem] = [:]
     @Published var selectedID: UUID?
     @Published private(set) var saveStatus: SaveStatus = .saved
 
     private let fileURL: URL
-    private var saveWorkItem: DispatchWorkItem?
     private var hasUnsavedChanges = false
     private var loadFailed = false
 
@@ -53,7 +56,7 @@ final class MemoLibraryModel: ObservableObject {
     }
 
     var sortedItems: [MemoItem] {
-        items.sorted {
+        records.sorted {
             if $0.isPinned != $1.isPinned { return $0.isPinned && !$1.isPinned }
             return $0.updatedAt > $1.updatedAt
         }
@@ -61,7 +64,15 @@ final class MemoLibraryModel: ObservableObject {
 
     var selectedItem: MemoItem? {
         guard let selectedID else { return nil }
-        return items.first { $0.id == selectedID }
+        return item(id: selectedID)
+    }
+
+    var items: [MemoItem] {
+        records.map { drafts[$0.id] ?? $0 }
+    }
+
+    func item(id: UUID) -> MemoItem? {
+        drafts[id] ?? records.first { $0.id == id }
     }
 
     @discardableResult
@@ -94,71 +105,84 @@ final class MemoLibraryModel: ObservableObject {
             updatedAt: now,
             isPinned: false
         )
-        items.append(item)
+        records.append(item)
         selectedID = item.id
-        scheduleSave()
+        markChanged()
         return item.id
     }
 
     func updateTitle(_ title: String) {
-        updateSelected { $0.title = title }
+        guard let selectedID else { return }
+        updateTitle(title, for: selectedID)
+    }
+
+    func updateTitle(_ title: String, for id: UUID) {
+        updateItem(id: id) { $0.title = title }
     }
 
     func updateBody(_ body: String) {
-        updateSelected { $0.body = body }
+        guard let selectedID else { return }
+        updateBody(body, for: selectedID)
+    }
+
+    func updateBody(_ body: String, for id: UUID) {
+        updateItem(id: id) { $0.body = body }
     }
 
     func togglePinned(_ item: MemoItem) {
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index].isPinned.toggle()
-        items[index].updatedAt = Date()
-        scheduleSave()
+        guard let index = records.firstIndex(where: { $0.id == item.id }) else { return }
+        records[index].isPinned.toggle()
+        records[index].updatedAt = Date()
+        if var draft = drafts[item.id] {
+            draft.isPinned = records[index].isPinned
+            drafts[item.id] = draft
+        }
+        markChanged()
     }
 
     func deleteSelected() {
         guard let selectedID else { return }
-        items.removeAll { $0.id == selectedID }
+        drafts.removeValue(forKey: selectedID)
+        records.removeAll { $0.id == selectedID }
         self.selectedID = sortedItems.first?.id
-        scheduleSave()
+        markChanged()
     }
 
-    func flush() {
-        saveWorkItem?.cancel()
-        saveWorkItem = nil
+    @discardableResult
+    func flush() -> Bool {
         persist()
     }
 
-    private func updateSelected(_ mutate: (inout MemoItem) -> Void) {
-        guard let selectedID, let index = items.firstIndex(where: { $0.id == selectedID }) else { return }
-        mutate(&items[index])
-        items[index].updatedAt = Date()
-        scheduleSave()
+    private func updateItem(id: UUID, _ mutate: (inout MemoItem) -> Void) {
+        guard var draft = item(id: id) else { return }
+        let original = draft
+        mutate(&draft)
+        guard draft != original else { return }
+        draft.updatedAt = Date()
+        drafts[id] = draft
+        markChanged()
     }
 
-    private func scheduleSave() {
+    private func markChanged() {
         hasUnsavedChanges = true
-        saveWorkItem?.cancel()
-        saveStatus = .saving
-        let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in self?.persist() }
-        }
-        saveWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        if saveStatus == .saved { saveStatus = .pending }
     }
 
     private func load() {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
             let data = try Data(contentsOf: fileURL)
-            items = try JSONDecoder().decode([MemoItem].self, from: data)
+            records = try JSONDecoder().decode([MemoItem].self, from: data)
         } catch {
             loadFailed = true
             saveStatus = .failed
         }
     }
 
-    private func persist() {
-        guard hasUnsavedChanges else { return }
+    private func persist() -> Bool {
+        guard hasUnsavedChanges else { return true }
+        guard !loadFailed else { return false }
+        saveStatus = .saving
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -167,13 +191,16 @@ final class MemoLibraryModel: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(items).write(to: fileURL, options: .atomic)
-            saveWorkItem = nil
+            let snapshot = items
+            try encoder.encode(snapshot).write(to: fileURL, options: .atomic)
+            records = snapshot
+            drafts.removeAll()
             hasUnsavedChanges = false
             saveStatus = .saved
+            return true
         } catch {
-            saveWorkItem = nil
             saveStatus = .failed
+            return false
         }
     }
 }
@@ -197,9 +224,15 @@ struct MemoLibraryOverlay: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("备忘录")
                             .font(.system(size: 14, weight: .semibold))
-                        Text(model.saveStatus.text)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(model.saveStatus == .failed ? theme.danger : theme.muted)
+                        if model.saveStatus == .failed {
+                            Text(model.saveStatus.text)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(theme.danger)
+                        }
+                    }
+                    if model.saveStatus == .failed {
+                        Button("重试保存") { model.flush() }
+                            .buttonStyle(GlassButtonStyle(kind: .normal))
                     }
                     Spacer()
                     Button {
@@ -236,16 +269,13 @@ struct MemoLibraryOverlay: View {
 
                     if let selected = model.selectedItem {
                         VStack(alignment: .leading, spacing: 12) {
-                            TextField("备忘录标题", text: titleBinding)
+                            TextField("备忘录标题", text: titleBinding(for: selected.id))
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 17, weight: .semibold))
                                 .focused($titleFocused)
                                 .accessibilityLabel("备忘录标题")
 
-                            TextEditor(text: bodyBinding)
-                                .scrollContentBackground(.hidden)
-                                .font(.system(size: 12.5))
-                                .lineSpacing(4)
+                            NoteTextEditor(text: bodyBinding(for: selected.id), fontSize: 12.5, foreground: theme.foreground, identifier: "jaimo.memo.editor")
                                 .accessibilityLabel("备忘录正文")
 
                             HStack {
@@ -272,6 +302,7 @@ struct MemoLibraryOverlay: View {
                             }
                         }
                         .padding(16)
+                        .id(selected.id)
                     } else {
                         VStack(spacing: 10) {
                             Image(systemName: "note.text")
@@ -304,17 +335,17 @@ struct MemoLibraryOverlay: View {
         .onDisappear { model.flush() }
     }
 
-    private var titleBinding: Binding<String> {
+    private func titleBinding(for id: UUID) -> Binding<String> {
         Binding(
-            get: { model.selectedItem?.title ?? "" },
-            set: model.updateTitle
+            get: { model.item(id: id)?.title ?? "" },
+            set: { model.updateTitle($0, for: id) }
         )
     }
 
-    private var bodyBinding: Binding<String> {
+    private func bodyBinding(for id: UUID) -> Binding<String> {
         Binding(
-            get: { model.selectedItem?.body ?? "" },
-            set: model.updateBody
+            get: { model.item(id: id)?.body ?? "" },
+            set: { model.updateBody($0, for: id) }
         )
     }
 
@@ -350,7 +381,7 @@ struct MemoLibraryOverlay: View {
     }
 
     private func close() {
-        model.flush()
+        guard model.flush() else { return }
         onClose()
     }
 }

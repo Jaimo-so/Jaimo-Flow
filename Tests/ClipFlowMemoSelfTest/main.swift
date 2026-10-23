@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 @testable import ClipFlow
@@ -11,7 +12,21 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     guard condition() else { throw MemoTestError.failed(message) }
 }
 
-try MainActor.assumeIsolated {
+final class NoteTestDefaults: UserDefaults {
+    var quickNoteWrites = 0
+    var rejectQuickNoteWrites = false
+
+    override func set(_ value: Any?, forKey defaultName: String) {
+        if defaultName == "home.quickNote" {
+            quickNoteWrites += 1
+            if rejectQuickNoteWrites { return }
+        }
+        super.set(value, forKey: defaultName)
+    }
+}
+
+@MainActor
+func runTests() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("ClipFlowMemoSelfTest-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -25,6 +40,9 @@ try MainActor.assumeIsolated {
     model.updateTitle("原有备忘录")
     model.updateBody("原有正文")
     model.togglePinned(model.selectedItem!)
+    try await Task.sleep(nanoseconds: 650_000_000)
+    try require(!FileManager.default.fileExists(atPath: fileURL.path), "编辑期间仍触发了延迟保存")
+    try require(model.saveStatus == .pending, "编辑期间应显示关闭时保存")
     model.flush()
     let legacyItem = model.selectedItem!
 
@@ -79,6 +97,27 @@ try MainActor.assumeIsolated {
     let edited = reopened.selectedItem!
     try reopened.createMemo(id: tasks[0].id, title: tasks[0].title, body: tasks[0].body)
     try require(reopened.selectedItem == edited && reopened.items.count == 4, "重试覆盖用户编辑或产生重复记录")
+    let savedBeforeEditing = try Data(contentsOf: fileURL)
+    let orderBeforeEditing = reopened.sortedItems.map(\.id)
+    var memoRefreshes = 0
+    let memoSubscription = reopened.objectWillChange.sink { memoRefreshes += 1 }
+    reopened.updateBody("连")
+    reopened.updateBody("连续")
+    reopened.updateBody("第一次修改\n定义：完整保留记录。\n意义：关闭时统一保存。")
+    try require(memoRefreshes == 1, "备忘录每次输入仍在刷新整个列表")
+    try require(reopened.sortedItems.map(\.id) == orderBeforeEditing, "输入期间列表仍在重新排序")
+    memoSubscription.cancel()
+    reopened.selectedID = tasks[1].id
+    reopened.updateBody("切换后修改另一条")
+    try await Task.sleep(nanoseconds: 650_000_000)
+    let dataWhileEditing = try Data(contentsOf: fileURL)
+    try require(dataWhileEditing == savedBeforeEditing, "切换备忘录或输入停顿提前写入文件")
+    reopened.selectedID = tasks[0].id
+    reopened.updateBody("最后追加的完整正文\n定义：保留所有编辑。\n意义：旧保存结果不能覆盖最新输入。")
+    let latestItems = reopened.items
+    try require(reopened.flush(), "关闭时未能保存最新内容")
+    try await Task.sleep(nanoseconds: 650_000_000)
+    try require(MemoLibraryModel(fileURL: fileURL).items == latestItems, "延迟任务覆盖了关闭时保存的最新内容")
     // Same text with a different task ID must remain a distinct Memo.
     try reopened.createMemo(id: UUID(), title: tasks[1].title, body: tasks[1].body)
     try require(reopened.items.count == 5, "不同任务被按相同内容错误合并")
@@ -110,12 +149,59 @@ try MainActor.assumeIsolated {
     try retryModel.createMemo(id: retryID, title: "测试", body: "测试")
     retryModel.flush()
     try require(retryModel.saveStatus == .failed, "写入失败被报告为成功")
+    retryModel.updateBody("保存失败后继续写入的完整内容")
     try retryModel.createMemo(id: retryID, title: "测试", body: "测试")
     try require(retryModel.items.count == 1, "写入失败后重试追加重复记录")
     try FileManager.default.removeItem(at: blockedParent)
     retryModel.flush()
     try require(retryModel.saveStatus == .saved, "修复写入位置后不能保存待写入 Memo")
     try require(MemoLibraryModel(fileURL: retryURL).items.count == 1, "写入重试的保存结果不正确")
+    try require(MemoLibraryModel(fileURL: retryURL).selectedItem?.body == "保存失败后继续写入的完整内容", "失败后继续输入的内容丢失")
+
+    let suite = "ClipFlowQuickNoteSelfTest.\(UUID().uuidString)"
+    let defaults = NoteTestDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set("上次关闭时的内容", forKey: "home.quickNote")
+    defaults.quickNoteWrites = 0
+    let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("quick-note-memos.json")))
+    try require(home.quickNote == "上次关闭时的内容", "便签未恢复上次关闭时的内容")
+    var quickNoteRefreshes = 0
+    let quickNoteSubscription = home.objectWillChange.sink { quickNoteRefreshes += 1 }
+    home.quickNote = "正在编辑\n第二行"
+    home.quickNote += "连续输入"
+    home.quickNote += "不中断"
+    try require(quickNoteRefreshes == 1, "便签每次输入仍在刷新整个共享界面")
+    quickNoteSubscription.cancel()
+    try await Task.sleep(nanoseconds: 650_000_000)
+    try require(defaults.quickNoteWrites == 0, "便签输入停顿期间仍在保存")
+    try require(defaults.string(forKey: "home.quickNote") == "上次关闭时的内容", "便签编辑覆盖了上次保存的内容")
+    try require(home.quickNoteSaveStatus == .pending, "便签编辑期间未显示关闭时保存")
+    home.quickNote += "\n关闭前最后追加"
+    try require(home.flushQuickNote(), "便签关闭时保存失败")
+    try require(defaults.string(forKey: "home.quickNote") == home.quickNote, "便签没有保存最后的完整内容")
+    try require(defaults.quickNoteWrites == 1, "便签关闭时不止保存一次")
+    home.flushQuickNote()
+    try require(defaults.quickNoteWrites == 1, "重复关闭造成重复写入")
+    let savedQuickNote = home.quickNote
+    home.quickNote = "重新打开后继续输入"
+    try await Task.sleep(nanoseconds: 650_000_000)
+    try require(home.quickNote == "重新打开后继续输入", "旧保存任务覆盖了新输入")
+    try require(defaults.string(forKey: "home.quickNote") == savedQuickNote, "重新编辑时提前保存")
+    defaults.rejectQuickNoteWrites = true
+    try require(!home.flushQuickNote() && home.quickNoteSaveStatus == .failed, "便签写入失败没有正确报告")
+    home.quickNote += "\n失败后继续追加"
+    try require(home.quickNote.hasSuffix("失败后继续追加"), "便签保存失败后没有保留新编辑")
+    defaults.rejectQuickNoteWrites = false
+    try require(home.flushQuickNote(), "便签写入恢复后不能重试")
+    try require(defaults.string(forKey: "home.quickNote") == home.quickNote, "便签重试丢失完整内容")
+    home.quickNote = ""
+    try require(home.flushQuickNote() && defaults.string(forKey: "home.quickNote") == "", "清空便签后关闭没有保存空内容")
+
+    home.memoLibraryOpen = true
+    home.memoLibrary.createMemo()
+    home.memoLibrary.updateBody("关闭面板前的正文")
+    home.closeMemoLibrary()
+    try require(!home.memoLibraryOpen && home.memoLibrary.saveStatus == .saved, "关闭备忘录面板未保存")
 
     // Preserve normal edit / pin / delete behavior on imported ordinary Memos.
     reopened.selectedID = tasks[2].id
@@ -124,5 +210,7 @@ try MainActor.assumeIsolated {
     reopened.deleteSelected()
     reopened.flush()
     try require(MemoLibraryModel(fileURL: fileURL).items.count == 4, "原有删除保存流程失效")
-    print("PASS: 单任务单 Memo、原有界面数据路径、保存重载、重复调用、编辑保留、字段兼容与失败重试")
+    print("PASS: 备忘录与便签编辑不逐字刷新共享界面、不写盘与重排；关闭保存最新全文；失败重试与字段兼容")
 }
+
+try await runTests()

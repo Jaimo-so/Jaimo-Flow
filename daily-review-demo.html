@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>每日复盘 · Jaimo Flow</title>
+  <style>
+    /* A standalone product prototype, following the existing Jaimo workbench.
+       Design variance 3 / motion 2 / density 4. Native CSS, no dependencies. */
+    :root{--ink:#242725;--secondary:#525b5e;--muted:#687377;--accent:#087e97;--wash:#ecf7fa;--line:#e8edef;--canvas:#f4f6f7;--white:#fff;--radius:18px;--small:9px;--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);background:#e8eef0;font:14px/1.6 var(--font);-webkit-font-smoothing:antialiased;min-height:100dvh;padding:32px 24px}button,input,textarea{font:inherit}button{cursor:pointer;color:inherit}button,input,textarea{outline-offset:4px}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent)}button{transition:background .16s,transform .16s}button:active{transform:scale(.98)}button:disabled{cursor:default;opacity:.5}button:disabled:active{transform:none}button,textarea,input{ -webkit-tap-highlight-color:transparent}h1,h2,h3,p{margin:0}button{border:0}textarea{resize:vertical}::selection{background:#c9eaf2}[hidden]{display:none!important}.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+    .app{max-width:1280px;margin:auto;background:var(--canvas);border:1px solid #d9e1e4;border-radius:24px;box-shadow:0 24px 70px #40565c13;overflow:hidden}
+    .topbar{display:flex;gap:34px;align-items:center;padding:19px 28px;border-bottom:1px solid var(--line);background:#f8fafb}.brand{display:flex;align-items:center;gap:10px;white-space:nowrap;font-size:18px;font-weight:750;letter-spacing:-.4px}.brand img{width:35px;height:35px;object-fit:contain;background:#fff;border-radius:8px}.nav{display:flex;align-items:center;gap:8px}.nav-item{padding:9px 17px;color:var(--muted);font-size:14px}.nav-item.active{position:relative;border-radius:var(--small);background:#edf1f2;color:var(--ink);font-weight:600}.nav-item.active::after{position:absolute;content:"";height:3px;background:var(--accent);bottom:-20px;left:22px;right:22px;border-radius:4px}.demo-label{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid #dce3e5;padding:3px 8px;border-radius:6px;white-space:nowrap}
+    main{padding:30px}.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:25px}.heading h1{font-size:26px;font-weight:700;letter-spacing:-.7px}.heading p{margin-top:4px;font-size:13px;color:var(--muted)}.text-button{background:transparent;padding:5px 0;color:var(--secondary);display:inline-flex;align-items:center;gap:8px}.text-button:hover{color:var(--accent)}.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:var(--small);background:#eaf0f2;font-size:13px;font-weight:550;white-space:nowrap}.button:hover{background:#e0e9ec}.button.primary{background:var(--ink);color:#fff}.button.primary:hover{background:#3b4547}.button.accent{background:var(--accent);color:#fff}.button.accent:hover{background:#066c82}.button.outline{background:#fff;border:1px solid #dfe6e8}.button.outline:hover{background:#f5f8f9}.arrow{font-size:18px;line-height:1;font-weight:400}.tiny{font-size:12px;color:var(--muted)}
+    .home-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card{background:var(--white);border-radius:var(--radius);padding:23px;min-width:0}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.card h2{font-size:17px;font-weight:650}.review-card{grid-column:span 2;position:relative;overflow:hidden;border:1px solid #d8e9ee;background:linear-gradient(115deg,#fff 25%,#f0f9fb);padding:25px 27px}.review-card .card-head h2{font-size:19px;letter-spacing:-.3px}.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;background:var(--wash);color:var(--accent);border-radius:6px;font-size:11px;font-weight:550;white-space:nowrap}.badge.done{background:#eaf3f5;color:#35606a}.review-intro{color:var(--secondary);font-size:13px;margin-top:5px}.review-summary{display:flex;gap:25px;margin-top:23px;margin-bottom:24px}.date-tile{padding:5px 0;border-right:1px solid #dae7eb;min-width:85px}.date-tile .month{color:var(--muted);font-size:11px}.date-tile .day{display:block;font:500 49px/1.15 var(--font);letter-spacing:-2px;margin-top:3px}.date-tile .weekday{font-size:11px;color:var(--muted)}.summary-body{flex:1;min-width:0}.home-note-label{display:block;font-size:13px;font-weight:600;margin:2px 0 10px}.home-review-note{display:block;width:100%;height:164px;min-height:164px;padding:0 3px 0 0;border:0;border-radius:4px;background:transparent;resize:none;color:var(--secondary);font-size:13px;line-height:1.95;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#cbdde3 transparent}.home-review-note::placeholder{color:var(--muted)}.home-review-note:focus-visible{outline-offset:6px}.home-note-footer{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:10px;margin-top:12px}.home-note-footer span:last-child{white-space:nowrap;font-variant-numeric:tabular-nums;margin-left:auto}.field textarea.history-note{min-height:360px;overflow-y:auto;font-size:13px;line-height:2;resize:vertical}.card-bottom{display:flex;align-items:center;gap:13px;justify-content:space-between}.card-actions{display:flex;gap:10px}
+    .note-area{border:0;width:100%;height:188px;background:transparent;padding:15px 0 8px;font-size:13px;line-height:1.9;color:var(--secondary);resize:none}.note-area::placeholder{color:var(--muted)}.save-small{font-size:11px;color:var(--muted);text-align:right}.memo-card,.apps-card,.clock-card{min-height:216px}.memo-text{font-size:13px;color:var(--secondary);padding:18px 0 12px}.memo-text p+p{margin-top:8px}.memo-footer{border-top:1px solid var(--line);margin-top:15px;padding-top:12px;display:flex;align-items:center;justify-content:space-between}.app-row{display:flex;gap:11px;align-items:center;margin-top:18px}.app-monogram{width:34px;height:34px;border:1px solid var(--line);border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:650;color:#526367;background:#f6f9fa}.app-row strong{font-size:12px;font-weight:550}.app-row p{font-size:10px;color:var(--muted);margin-top:1px}.app-row .app-note{margin-left:auto;color:var(--muted);font-size:11px}.clock{font:400 43px/1.3 ui-monospace,"SF Mono",monospace;letter-spacing:-2.5px;margin-top:18px}.clock-date{color:var(--muted);font-size:12px;margin-top:5px}.clock-divider{height:1px;background:var(--line);margin:16px 0 10px}.home-foot{margin-top:20px;display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted)}.home-foot .mini-line{width:18px;height:1px;background:#b6c6cb}
+    .review-heading{margin-bottom:23px}.breadcrumb{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin-bottom:9px}.breadcrumb .text-button{font-size:12px}.heading-actions{display:flex;gap:9px;align-items:center}.review-shell{display:grid;grid-template-columns:266px minmax(0,1fr);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;min-height:666px}.history-pane{background:#f9fbfc;border-right:1px solid var(--line);padding:20px 17px;min-width:0}.sidebar-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px}.sidebar-top h2{font-size:13px;font-weight:650}.today-button{background:#eef4f6;color:var(--accent);font-size:11px;border-radius:6px;padding:4px 9px}.calendar-head{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;padding:1px 4px 11px}.month-controls{display:flex;gap:5px}.icon-button{display:grid;place-items:center;background:transparent;border-radius:6px;width:27px;height:27px;font-size:20px;line-height:1;color:var(--secondary)}.icon-button:hover{background:#e9eff1}.calendar-week,.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px}.calendar-week span{font-size:10px;color:var(--muted);text-align:center;padding:4px 0 8px}.calendar-grid button{position:relative;aspect-ratio:1;background:transparent;border-radius:7px;font-size:11px;padding:0;font-variant-numeric:tabular-nums}.calendar-grid button:hover{background:#e9f2f5}.calendar-grid .other-month{color:#79888e}.calendar-grid .today{font-weight:700;color:var(--accent);box-shadow:inset 0 0 0 1px #a2cbd5}.calendar-grid .selected{background:var(--accent);color:#fff;box-shadow:none}.calendar-grid .has-note::after{content:"";position:absolute;width:3px;height:3px;border-radius:50%;background:var(--accent);bottom:4px;left:calc(50% - 1.5px)}.calendar-grid .selected.has-note::after{background:#fff}.calendar-legend{font-size:10px;color:var(--muted);margin:12px 2px 23px;display:flex;align-items:center;gap:7px}.record-dot{width:4px;height:4px;background:var(--accent);border-radius:50%}.history-header{font-size:12px;font-weight:600;padding-top:19px;border-top:1px solid var(--line);margin-bottom:10px}.search{width:100%;font-size:11px;border:1px solid #dfe7ea;border-radius:7px;background:#fff;padding:8px 10px;margin-bottom:11px;color:var(--ink)}.search::placeholder{color:var(--muted)}.history-list{display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto}.history-item{display:block;position:relative;text-align:left;background:transparent;border-radius:9px;padding:11px 12px;width:100%;border:1px solid transparent}.history-item:hover{background:#edf3f5}.history-item.active{background:#ecf6f9;border-color:#d8ecf1}.history-date{display:flex;align-items:center;justify-content:space-between;color:var(--secondary);font-size:10px;margin-bottom:4px}.history-item strong{font-size:12px;font-weight:550;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.history-state{font-size:9px;color:var(--muted)}.history-state.complete{color:var(--accent)}.history-empty{font-size:11px;color:var(--muted);padding:20px 4px;line-height:1.8}
+    .editor{min-width:0;padding:27px 34px 21px}.editor-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px}.date-controls{display:flex;gap:10px;align-items:center}.date-controls label{position:relative;display:block}.date-controls input{width:148px;border:0;background:transparent;font-size:12px;color:var(--secondary);padding:5px 0}.editor-save{font-size:11px;color:var(--muted)}.editor-title{width:100%;border:0;background:transparent;padding:0;font-size:26px;font-weight:650;letter-spacing:-.7px;margin:17px 0 7px;color:var(--ink)}.editor-title::placeholder{color:#67767c}.editor-subtitle{font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.entry-fields{margin-top:25px;display:grid;grid-template-columns:1fr;gap:21px}.field-head{display:flex;gap:10px;align-items:baseline;margin-bottom:9px}.section-number{font-size:10px;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:650}.field-head label{font-size:14px;font-weight:650}.field-hint{font-size:11px;color:var(--muted);margin-left:auto}.field textarea{display:block;width:100%;border:1px solid #e5ecef;border-radius:9px;padding:12px 14px;background:#fafcfd;color:var(--secondary);line-height:1.85;font-size:12px;min-height:84px;transition:border-color .16s,background .16s;overflow-y:hidden}.field textarea::placeholder{color:#68767c}.field textarea:focus{border-color:#8ebfcb;background:#fff;outline-offset:2px}.editor-footer{border-top:1px solid var(--line);margin-top:24px;padding-top:15px;display:flex;align-items:center;justify-content:space-between;gap:15px;font-size:11px;color:var(--muted)}.count{font-variant-numeric:tabular-nums}.bottom-caption{text-align:center;font-size:11px;color:#68767c;max-width:1280px;margin:18px auto 0}.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);border:1px solid #dbe6e9;border-radius:10px;background:#fff;color:var(--ink);box-shadow:0 8px 30px #354a5119;padding:11px 18px;font-size:12px;z-index:10;max-width:calc(100vw - 32px)}
+    @media(min-width:1450px){body{padding-top:48px}}
+    @media(max-width:1050px){.topbar{gap:20px;padding:17px 22px}.nav-item{padding:8px 12px}.nav-item.active::after{bottom:-18px}main{padding:24px}.review-shell{grid-template-columns:235px minmax(0,1fr)}.editor{padding:25px}.field-hint{font-size:10px}.card{padding:20px}.review-card{padding:23px}.review-card .card-bottom{align-items:flex-start;gap:10px}.card-bottom>.tiny{max-width:105px;text-align:right}}
+    @media(max-width:760px){body{padding:12px}.app{border-radius:18px}.topbar{gap:12px;padding:15px 18px;flex-wrap:wrap}.brand{font-size:16px}.brand img{width:30px;height:30px}.demo-label{order:1}.nav{order:2;width:100%;gap:6px;margin-top:5px}.nav-item{padding:7px 13px;font-size:12px}.nav-item.active::after{bottom:-16px}main{padding:23px 17px}.heading h1{font-size:24px}.heading{align-items:flex-start}.home-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.review-card{grid-column:1/-1;padding:23px}.quick-note{grid-column:1/-1}.note-area{height:100px}.clock-card{grid-column:1/-1}.review-heading{display:block}.heading-actions{margin-top:17px}.review-shell{grid-template-columns:minmax(0,1fr)}.history-pane{border-right:0;border-bottom:1px solid var(--line);padding:17px}.calendar-wrap{display:none}.sidebar-top{margin-bottom:10px}.history-header{display:none}.history-list{flex-direction:row;max-height:none;overflow-x:auto}.history-item{min-width:180px;width:180px}.search{margin-bottom:9px}.editor{padding:21px 18px}.editor-title{font-size:23px}.field-hint{max-width:60%;text-align:right}.editor-footer{align-items:flex-start}.home-foot{font-size:10px}.bottom-caption{font-size:10px}.review-summary{gap:18px}.card-bottom{flex-wrap:wrap}.card-bottom>.tiny{max-width:none;text-align:left}}
+    @media(max-width:420px){.home-grid{grid-template-columns:1fr}.review-card,.quick-note,.clock-card{grid-column:auto}.review-card{padding:20px}.card-actions{gap:7px}.card-actions .button{padding:10px 12px}.heading-actions .button{padding:9px 11px}.date-controls{gap:4px}.date-controls input{width:139px}.editor-save{font-size:10px}.field-head{flex-wrap:wrap;gap:6px}.field-hint{max-width:100%;width:100%;margin-left:21px;text-align:left}.nav-item{padding:7px 11px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><img src="Resources/AppLogo.png" alt="Jaimo 标志"><span>Jaimo Flow</span></div>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" id="home-nav" aria-current="page">首页</button>
+        <span class="nav-item">应用</span><span class="nav-item">提示词</span><span class="nav-item">剪切板</span>
+      </nav>
+      <span class="demo-label">功能演示</span>
+    </header>
+
+    <main id="home-view">
+      <div class="heading"><div><h1>工作台</h1><p id="home-greeting"></p></div><span class="tiny">留一点时间，回看今天。</span></div>
+      <div class="home-grid">
+        <section class="card review-card" aria-labelledby="review-card-title">
+          <div class="card-head"><h2 id="review-card-title">每日复盘</h2></div>
+          <div class="review-summary">
+            <div class="date-tile"><span class="month" id="tile-month"></span><span class="day" id="tile-day"></span><span class="weekday" id="tile-weekday"></span></div>
+            <div class="summary-body">
+              <label class="sr-only" for="home-review-note">今天的复盘内容</label>
+              <textarea id="home-review-note" class="home-review-note" aria-describedby="home-review-meta"></textarea>
+              <div class="home-note-footer"><span id="home-note-count">0 字</span></div>
+            </div>
+          </div>
+          <div class="card-bottom"><div class="card-actions"><button class="button primary" id="save-home-review">保存复盘</button><button class="button outline" id="view-history">历史复盘</button></div><span class="sr-only" id="home-review-meta" role="status" aria-live="polite"></span></div>
+        </section>
+        <section class="card quick-note"><div class="card-head"><h2>快速便签</h2><span class="tiny">随手记</span></div><label for="quick-note" hidden>快速便签正文</label><textarea id="quick-note" class="note-area" aria-label="快速便签正文" placeholder="记下稍后要处理的事…"></textarea><p class="save-small" id="quick-note-save" role="status">演示便签</p></section>
+        <section class="card memo-card"><div class="card-head"><h2>备忘录</h2><span class="tiny">示例</span></div><div class="memo-text"><p>下次讨论：每日复盘要不要支持从剪切板添加素材？</p><p class="tiny">先把每天记录的体验做好。</p></div><div class="memo-footer"><span class="tiny">产品想法</span><span class="tiny">1 条记录</span></div></section>
+        <section class="card apps-card"><div class="card-head"><h2>最近使用</h2><span class="tiny">示例</span></div><div class="app-row"><span class="app-monogram">C</span><div><strong>Codex</strong><p>讨论功能与界面</p></div><span class="app-note">刚刚</span></div><div class="app-row"><span class="app-monogram">F</span><div><strong>Finder</strong><p>整理工作文件</p></div><span class="app-note">12 分钟前</span></div><div class="app-row"><span class="app-monogram">S</span><div><strong>Safari</strong><p>查阅资料</p></div><span class="app-note">28 分钟前</span></div></section>
+        <section class="card clock-card"><div class="card-head"><h2>时间</h2><span class="tiny">上海</span></div><div class="clock" id="clock"></div><p class="clock-date" id="clock-date"></p><div class="clock-divider"></div><p class="tiny">忙碌有记录，思考有去处。</p></section>
+      </div>
+    </main>
+
+    <main id="review-view" hidden>
+      <div class="heading review-heading">
+        <div><div class="breadcrumb"><button class="text-button" id="back-home"><span aria-hidden="true">←</span> 工作台</button><span aria-hidden="true">/</span><span>每日复盘</span></div><h1>每日复盘</h1><p>记录事实，留下思考，安排下一步。</p></div>
+        <div class="heading-actions"><button class="button outline" id="export-review">导出 Markdown <span aria-hidden="true">↓</span></button><button class="button primary" id="complete-review"><span id="complete-label">保存复盘</span></button></div>
+      </div>
+      <div class="review-shell">
+        <aside class="history-pane" aria-label="复盘日期与历史记录">
+          <div class="sidebar-top"><h2>复盘记录</h2><button class="today-button" id="go-today">回到今天</button></div>
+          <div class="calendar-wrap"><div class="calendar-head"><span id="calendar-month"></span><div class="month-controls"><button class="icon-button" id="previous-month" aria-label="上个月">‹</button><button class="icon-button" id="next-month" aria-label="下个月">›</button></div></div><div class="calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid" id="calendar-grid" aria-label="选择复盘日期"></div><div class="calendar-legend"><span class="record-dot" aria-hidden="true"></span>有复盘记录</div></div>
+          <h3 class="history-header">历史复盘</h3><label for="history-search" hidden>搜索复盘标题或正文</label><input class="search" id="history-search" type="search" aria-label="搜索复盘标题或正文" placeholder="搜索标题或正文…"><div class="history-list" id="history-list"></div>
+        </aside>
+        <section class="editor" aria-label="复盘编辑器">
+          <div class="editor-toolbar"><div class="date-controls"><button class="icon-button" id="previous-day" aria-label="前一天">‹</button><label><span hidden>当前复盘日期</span><input type="date" id="entry-date" aria-label="当前复盘日期"></label><button class="icon-button" id="next-day" aria-label="后一天">›</button></div><span class="editor-save" id="save-state" role="status" aria-live="polite">已保存到本机</span></div>
+          <label for="entry-title" hidden>复盘标题</label><input id="entry-title" class="editor-title" aria-label="复盘标题" maxlength="120" placeholder="给今天一个标题">
+          <div class="editor-subtitle"><span id="entry-weekday"></span><span aria-hidden="true">·</span><span class="badge" id="entry-state">进行中</span><span class="tiny" id="entry-progress"></span></div>
+          <div class="entry-fields field"><label class="home-note-label" for="entry-body">复盘内容</label><textarea id="entry-body" class="history-note" placeholder="自由写下这一天的工作、思考与收获。" rows="15"></textarea></div>
+          <div class="editor-footer"><span>自由记录，写完后点击「保存复盘」。</span><span class="count" id="word-count">0 字</span></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <p class="bottom-caption">Jaimo Flow · 每日复盘交互演示 · 历史内容为示例，保存后仅存于当前浏览器</p>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script>
+    'use strict';
+    const $ = selector => document.querySelector(selector);
+    const fields = ['done','blockers','learning','next'];
+    const labels = ['今日完成','问题与卡点','收获与思考','下一步安排'];
+    const storageKey = 'jaimo-daily-review-html-demo-v1';
+    const noteKey = 'jaimo-daily-review-html-demo-quick-note-v1';
+    const today = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    const toDate = key => new Date(key+'T12:00:00');
+    const keyOf = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+    const shiftDay = (key,amount) => {const d=toDate(key);d.setDate(d.getDate()+amount);return keyOf(d)};
+    const fmt = (key,options) => new Intl.DateTimeFormat('zh-CN',options).format(toDate(key));
+    const previousWorkday = key => {let d=shiftDay(key,-1);while([0,6].includes(toDate(d).getDay()))d=shiftDay(d,-1);return d};
+    const emptyEntry = () => ({title:'',done:'',blockers:'',learning:'',next:'',complete:false,updated:null});
+    function entryBody(entry){
+      if(!entry)return '';
+      if(typeof entry.body==='string')return entry.body;
+      return fields.filter(field=>entry[field]).map(field=>`${labels[fields.indexOf(field)]}\n${entry[field]}`).join('\n\n');
+    }
+    const hasContent = entry => !!entry && (!!entry.title.trim() || !!entryBody(entry).trim());
+    function initialEntries(){
+      const last=previousWorkday(today),earlier=previousWorkday(last);
+      return {
+        [last]:{...emptyEntry(),title:'先把问题说清楚',body:'整理工作台的功能入口，梳理便签与长期记录的使用场景。\n\n今天发现，短期提醒和长期笔记混在一起，回看时不容易找到重点。快速便签用于临时记录；每日复盘以日期组织工作经历、思考和下一步安排。两者的用途不同，可以在同一工作台协作。\n\n下一步：讨论每日复盘的名字和第一版功能。',complete:true},
+        [earlier]:{...emptyEntry(),title:'给工作留一点秩序',body:'整理本周的零散工作笔记，找出需要继续推进的事项。\n\n问题：记录分散，缺少统一的回看入口。\n\n收获：每天保留一篇完整记录，能更容易追溯决策和经验。\n\n下一步：为工作台设计一个按日期记录的笔记入口。',complete:true}
+      };
+    }
+    function validEntries(value){return value && typeof value==='object' && !Array.isArray(value) && Object.entries(value).every(([key,e])=>/^\d{4}-\d{2}-\d{2}$/.test(key)&&!Number.isNaN(toDate(key).getTime())&&e&&['title',...fields].every(f=>typeof e[f]==='string')&&(e.body===undefined||typeof e.body==='string')&&typeof e.complete==='boolean')}
+    let entries=initialEntries(),storageAvailable=true;
+    try{const saved=localStorage.getItem(storageKey);if(saved){const parsed=JSON.parse(saved);if(validEntries(parsed))entries=parsed}}
+    catch{storageAvailable=false}
+    // Remove only the canned current-day text from the earlier prototype; keep any edited note.
+    const oldExample=entries[today];
+    if(oldExample?.title==='让每日记录更有方向'
+      && oldExample.done==='确定新功能的名字：每日复盘。\n完成首页入口和复盘编辑页的界面演示。'
+      && oldExample.blockers==='功能边界需要继续确认：先手动记录，还是加入剪切板素材？'
+      && oldExample.learning==='复盘不只是列出做过的事，还要留下自己的理解。\n记录事实、分析原因、提炼经验，才能指导下一步行动。'
+      && oldExample.next===''
+      && oldExample.body===entryBody({...oldExample,body:undefined})){
+      const cleaned={...entries};delete cleaned[today];
+      try{localStorage.setItem(storageKey,JSON.stringify(cleaned));entries=cleaned}catch{storageAvailable=false}
+    }
+    let selected=today,calendarDate=toDate(today),toastTimer,quickTimer,quickPending=false;
+    const drafts=new Map();
+    function draftFor(key){return drafts.get(key)||{title:entries[key]?.title||'',body:entryBody(entries[key])}}
+    function notify(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,3200)}
+    function saveReview(key){
+      const draft=draftFor(key);
+      if(!draft.body.trim()){notify('先写下今天的复盘内容，再保存。');(key===today&&!$('#home-view').hidden?$('#home-review-note'):$('#entry-body')).focus();return false}
+      const updated={...(entries[key]||emptyEntry()),title:draft.title||draft.body.split('\n').find(line=>line.trim()).trim().slice(0,40),body:draft.body,complete:true,updated:new Date().toISOString()};
+      const snapshot={...entries,[key]:updated};
+      try{localStorage.setItem(storageKey,JSON.stringify(snapshot));entries=snapshot;drafts.delete(key);storageAvailable=true;renderHome();renderEntryStatus();renderHistory();renderCalendar();notify('复盘已保存，可以在历史复盘中查看。');return true}
+      catch{storageAvailable=false;if(key===today)$('#home-review-meta').textContent='保存失败，内容仍保留在输入框';$('#save-state').textContent='保存失败，内容仍保留在输入框';notify('保存失败，内容仍在当前页面，请重试或导出。');return false}
+    }
+    function renderEntryStatus(){const dirty=drafts.has(selected),saved=hasContent(entries[selected]),draft=draftFor(selected);$('#entry-state').textContent=dirty?'未保存':saved?'已保存':'尚未填写';$('#entry-state').classList.toggle('done',saved&&!dirty);$('#entry-progress').textContent='自由笔记';$('#save-state').textContent=dirty?'修改尚未保存':saved?'已保存到本机':'写完后点击保存';$('#word-count').textContent=`${draft.body.replace(/\s/g,'').length} 字`}
+    function renderEditor(){
+      const draft=draftFor(selected);$('#entry-date').value=selected;$('#entry-title').value=draft.title;$('#entry-body').value=draft.body;$('#entry-weekday').textContent=fmt(selected,{month:'long',day:'numeric',weekday:'long'});renderEntryStatus();
+    }
+    function renderHome(){
+      const draft=draftFor(today),dirty=drafts.has(today),saved=hasContent(entries[today]);
+      $('#tile-month').textContent=fmt(today,{year:'numeric',month:'long'});$('#tile-day').textContent=toDate(today).getDate();$('#tile-weekday').textContent=fmt(today,{weekday:'long'});
+      if($('#home-review-note').value!==draft.body)$('#home-review-note').value=draft.body;
+      $('#home-note-count').textContent=`${draft.body.replace(/\s/g,'').length} 字`;
+      $('#home-review-meta').textContent=dirty?'修改尚未保存':saved?'已保存到本机':'写完后点击保存';
+    }
+    function renderCalendar(){
+      const year=calendarDate.getFullYear(),month=calendarDate.getMonth();$('#calendar-month').textContent=`${year} 年 ${month+1} 月`;
+      const first=new Date(year,month,1,12),start=new Date(first);start.setDate(1-((first.getDay()+6)%7));const totalDays=new Date(year,month+1,0).getDate(),cellCount=Math.ceil((((first.getDay()+6)%7)+totalDays)/7)*7;
+      const grid=$('#calendar-grid');grid.replaceChildren();
+      for(let i=0;i<cellCount;i++){const d=new Date(start);d.setDate(start.getDate()+i);const key=keyOf(d),button=document.createElement('button');button.textContent=d.getDate();button.classList.toggle('other-month',d.getMonth()!==month);button.classList.toggle('today',key===today);button.classList.toggle('selected',key===selected);const exists=entries[key]&&hasContent(entries[key]);button.classList.toggle('has-note',!!exists);button.setAttribute('aria-label',`${fmt(key,{month:'long',day:'numeric',weekday:'long'})}${exists?'，有复盘':''}`);button.setAttribute('aria-pressed',String(key===selected));button.addEventListener('click',()=>selectDate(key));grid.append(button)}
+    }
+    function renderHistory(){
+      const query=$('#history-search').value.trim().toLocaleLowerCase(),list=$('#history-list');list.replaceChildren();
+      const keys=Object.keys(entries).filter(key=>hasContent(entries[key])).sort().reverse().filter(key=>[entries[key].title,entryBody(entries[key]),key].join('\n').toLocaleLowerCase().includes(query));
+      if(!keys.length){const p=document.createElement('p');p.className='history-empty';p.textContent=query?'没有找到相关复盘，换个关键词试试。':'还没有复盘记录。选择一个日期，写下第一篇。';list.append(p)}
+      keys.forEach(key=>{const e=entries[key],button=document.createElement('button');button.className='history-item'+(key===selected?' active':'');button.setAttribute('aria-pressed',String(key===selected));const meta=document.createElement('div');meta.className='history-date';const date=document.createElement('span');date.textContent=fmt(key,{month:'numeric',day:'numeric',weekday:'short'});const state=document.createElement('span');state.className='history-state'+(e.complete?' complete':'');state.textContent='已保存';meta.append(date,state);const title=document.createElement('strong');title.textContent=e.title||'未命名复盘';button.append(meta,title);button.addEventListener('click',()=>selectDate(key));list.append(button)});
+    }
+    function selectDate(key){if(!/^\d{4}-\d{2}-\d{2}$/.test(key)||Number.isNaN(toDate(key).getTime()))return;selected=key;calendarDate=toDate(key);renderEditor();renderCalendar();renderHistory()}
+    function openReview(){ $('#home-view').hidden=true;$('#review-view').hidden=false;selectDate(today);window.scrollTo(0,0);$('#history-search').focus({preventScroll:true}) }
+    function backHome(){ $('#review-view').hidden=true;$('#home-view').hidden=false;renderHome();window.scrollTo(0,0);$('#home-review-note').focus({preventScroll:true}) }
+    function onEdit(){drafts.set(selected,{title:$('#entry-title').value,body:$('#entry-body').value});renderEntryStatus();if(selected===today)renderHome()}
+    $('#entry-title').addEventListener('input',onEdit);$('#entry-body').addEventListener('input',onEdit);
+    $('#home-review-note').addEventListener('input',()=>{const saved=draftFor(today);drafts.set(today,{title:saved.title,body:$('#home-review-note').value});renderHome()});
+    $('#save-home-review').addEventListener('click',()=>saveReview(today));$('#view-history').addEventListener('click',openReview);$('#back-home').addEventListener('click',backHome);$('#home-nav').addEventListener('click',backHome);$('#go-today').addEventListener('click',()=>selectDate(today));$('#entry-date').addEventListener('change',event=>{if(event.target.value)selectDate(event.target.value)});
+    $('#previous-day').addEventListener('click',()=>selectDate(shiftDay(selected,-1)));$('#next-day').addEventListener('click',()=>selectDate(shiftDay(selected,1)));
+    function changeMonth(amount){calendarDate=new Date(calendarDate.getFullYear(),calendarDate.getMonth()+amount,1,12);renderCalendar()}
+    $('#previous-month').addEventListener('click',()=>changeMonth(-1));$('#next-month').addEventListener('click',()=>changeMonth(1));$('#history-search').addEventListener('input',renderHistory);
+    $('#complete-review').addEventListener('click',()=>saveReview(selected));
+    $('#export-review').addEventListener('click',()=>{const draft=draftFor(selected);const body=`# ${draft.title||'每日复盘'}\n\n日期：${selected}\n\n${draft.body}\n`;const url=URL.createObjectURL(new Blob([body],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=`每日复盘-${selected}.md`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);notify('已导出完整复盘内容。')});
+    function saveQuickNote(){clearTimeout(quickTimer);quickPending=false;try{localStorage.setItem(noteKey,$('#quick-note').value);$('#quick-note-save').textContent='已保存到本机'}catch{$('#quick-note-save').textContent='保存失败，内容仍在当前页面'}}
+    try{$('#quick-note').value=localStorage.getItem(noteKey)??'在首页写下今天的复盘。\n\n写完后，点击下方「保存复盘」。'}catch{$('#quick-note-save').textContent='内容暂存于当前页面'}
+    $('#quick-note').addEventListener('input',()=>{quickPending=true;$('#quick-note-save').textContent='正在保存…';clearTimeout(quickTimer);quickTimer=setTimeout(saveQuickNote,350)});
+    function updateClock(){const now=new Date();$('#clock').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hour12:false}).format(now);$('#clock-date').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'}).format(now)}
+    const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',hour12:false}).format(new Date()));$('#home-greeting').textContent=`${hour<12?'上午好':hour<18?'下午好':'晚上好'} · ${fmt(today,{month:'long',day:'numeric',weekday:'long'})}`;
+    window.addEventListener('pagehide',()=>{if(quickPending)saveQuickNote()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&quickPending)saveQuickNote()});document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key==='s'){event.preventDefault();saveReview($('#home-view').hidden?selected:today)}});
+    renderHome();renderCalendar();renderHistory();updateClock();setInterval(updateClock,30000);
+  </script>
+</body>
+</html>

@@ -34,7 +34,7 @@ final class PreferencesStore: ObservableObject {
         didSet { defaults.set(promptGroupOrder, forKey: Key.promptGroupOrder) }
     }
 
-    static let defaultWorkspaceSize = CGSize(width: 948, height: 680)
+    static let defaultWorkspaceSize = CGSize(width: 849, height: 575)
 
     var workspaceSize: CGSize {
         didSet {

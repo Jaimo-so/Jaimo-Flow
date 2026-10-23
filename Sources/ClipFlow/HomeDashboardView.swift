@@ -51,12 +51,13 @@ struct HomeWidgetDescriptor: Identifiable {
 
 enum HomeWidgetRegistry {
     static let descriptors: [HomeWidgetDescriptor] = [
-        .init(id: .clock, title: "时间", defaultOrder: 0, defaultVisibility: true, defaultSize: .small, allowedSizes: [.small, .medium]),
-        .init(id: .quickNote, title: "快速便签", defaultOrder: 1, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
-        .init(id: .memo, title: "备忘录", defaultOrder: 2, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
-        .init(id: .audioRecorder, title: "录音", defaultOrder: 3, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .quickNote, title: "快速便签", defaultOrder: 0, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .recentApplications, title: "最近使用", defaultOrder: 1, defaultVisibility: true, defaultSize: .small, allowedSizes: [.small, .medium, .large]),
+        .init(id: .audioRecorder, title: "录音", defaultOrder: 2, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
+        .init(id: .memo, title: "备忘录", defaultOrder: 3, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
         .init(id: .camera, title: "镜子", defaultOrder: 4, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
-        .init(id: .recentApplications, title: "最近使用", defaultOrder: 5, defaultVisibility: true, defaultSize: .small, allowedSizes: [.small, .medium, .large])
+        .init(id: .dailyReview, title: "每日复盘", defaultOrder: 5, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium]),
+        .init(id: .clock, title: "时间", defaultOrder: 6, defaultVisibility: false, defaultSize: .small, allowedSizes: [.small, .medium])
     ]
 
     static var orderedIDs: [HomeDashboardModel.WidgetID] {
@@ -73,9 +74,11 @@ enum HomeWidgetRegistry {
 final class HomeDashboardModel: ObservableObject {
     // Keep recording alive when the dashboard is hidden or recreated during navigation.
     let audioRecorder = AudioRecorderModel()
-    let memoLibrary = MemoLibraryModel()
+    let memoLibrary: MemoLibraryModel
+    let dailyReview = DailyReviewModel()
 
     enum WidgetID: String, CaseIterable, Identifiable {
+        case dailyReview
         case clock
         case quickNote
         case memo
@@ -91,21 +94,31 @@ final class HomeDashboardModel: ObservableObject {
     }
 
     enum QuickNoteSaveStatus: Equatable {
+        case pending
         case saving
         case saved
         case failed
 
         var text: String {
             switch self {
+            case .pending: return "关闭时保存 · 仅本机"
             case .saving: return "正在保存…"
             case .saved: return "已保存 · 仅本机"
-            case .failed: return "保存失败，请继续输入后重试"
+            case .failed: return "保存失败，内容已保留，请重试"
             }
         }
     }
 
-    @Published var quickNote: String {
-        didSet { if quickNote != oldValue { scheduleQuickNoteSave() } }
+    // The native editor owns live text. Notify the dashboard only when its
+    // dirty/empty state changes, never for every keystroke or marked-text update.
+    var quickNote: String {
+        didSet {
+            if quickNote != oldValue, quickNoteSaveStatus == .saved {
+                quickNoteSaveStatus = .pending
+            } else if quickNote.isEmpty != oldValue.isEmpty {
+                objectWillChange.send()
+            }
+        }
     }
     @Published private(set) var quickNoteSaveStatus: QuickNoteSaveStatus = .saved
     @Published private(set) var widgetOrder: [WidgetID]
@@ -119,6 +132,7 @@ final class HomeDashboardModel: ObservableObject {
         didSet { defaults.set(mirrorAspect.rawValue, forKey: Key.mirrorAspect) }
     }
     @Published var memoLibraryOpen = false
+    @Published var dailyReviewHistoryOpen = false
 
     private enum Key {
         static let quickNote = "home.quickNote"
@@ -129,10 +143,10 @@ final class HomeDashboardModel: ObservableObject {
     }
 
     private let defaults: UserDefaults
-    private var quickNoteSaveWorkItem: DispatchWorkItem?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, memoLibrary: MemoLibraryModel? = nil) {
         self.defaults = defaults
+        self.memoLibrary = memoLibrary ?? MemoLibraryModel()
         mirrorAspect = MirrorAspect(rawValue: defaults.string(forKey: Key.mirrorAspect) ?? "") ?? .automatic
         quickNote = defaults.string(forKey: Key.quickNote) ?? ""
 
@@ -305,31 +319,26 @@ final class HomeDashboardModel: ObservableObject {
         )
     }
 
-    func flushQuickNote() {
-        guard quickNoteSaveStatus != .saved else { return }
-        quickNoteSaveWorkItem?.cancel()
-        quickNoteSaveWorkItem = nil
-        persistQuickNote(quickNote)
-    }
-
-    private func scheduleQuickNoteSave() {
-        quickNoteSaveWorkItem?.cancel()
+    @discardableResult
+    func flushQuickNote() -> Bool {
+        guard quickNoteSaveStatus != .saved else { return true }
         quickNoteSaveStatus = .saving
         let value = quickNote
-        let workItem = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                self?.persistQuickNote(value)
-            }
-        }
-        quickNoteSaveWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
+        defaults.set(value, forKey: Key.quickNote)
+        quickNoteSaveStatus = defaults.string(forKey: Key.quickNote) == value ? .saved : .failed
+        return quickNoteSaveStatus == .saved
     }
 
-    private func persistQuickNote(_ value: String) {
-        defaults.set(value, forKey: Key.quickNote)
-        guard quickNote == value else { return }
-        quickNoteSaveWorkItem = nil
-        quickNoteSaveStatus = defaults.string(forKey: Key.quickNote) == value ? .saved : .failed
+    @discardableResult
+    func flushNotes() -> Bool {
+        let quickNoteSaved = flushQuickNote()
+        let memosSaved = memoLibrary.flush()
+        return quickNoteSaved && memosSaved
+    }
+
+    func closeMemoLibrary() {
+        guard memoLibrary.flush() else { return }
+        memoLibraryOpen = false
     }
 
     private static func mirrorDirectory() throws -> URL {
@@ -359,7 +368,7 @@ struct HomeDashboardView: View {
     @State private var editingWidgets = false
     @State private var draggedWidget: HomeDashboardModel.WidgetID?
     @State private var dropTargetWidget: HomeDashboardModel.WidgetID?
-    @FocusState private var noteFocused: Bool
+    @State private var noteFocusRequest = 0
     @FocusState private var focusedWidget: HomeDashboardModel.WidgetID?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -424,9 +433,18 @@ struct HomeDashboardView: View {
                     .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
             }
         }
+        .overlay {
+            if model.dailyReviewHistoryOpen {
+                DailyReviewHistoryOverlay(model: model.dailyReview) {
+                    model.dailyReviewHistoryOpen = false
+                }
+                .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
+            }
+        }
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.memoLibraryOpen)
+        .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.dailyReviewHistoryOpen)
         .onReceive(NotificationCenter.default.publisher(for: .jaimoFocusQuickNote)) { _ in
-            noteFocused = true
+            noteFocusRequest += 1
         }
         .onReceive(NotificationCenter.default.publisher(for: .jaimoStartCamera)) { _ in
             cameraModel.start()
@@ -434,15 +452,13 @@ struct HomeDashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .jaimoStopLocalDevices)) { _ in
             cameraModel.stop()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .jaimoFlushMemos)) { _ in
-            memoModel.flush()
-        }
         .onChange(of: focusedWidget) { focused in
             guard editingWidgets, let focused else { return }
             model.selectWidget(focused)
         }
         .onChange(of: model.hiddenWidgets) { hidden in
             if hidden.contains(.camera) { cameraModel.stop() }
+            if hidden.contains(.quickNote) { model.flushQuickNote() }
         }
         .onDisappear {
             cameraModel.stop()
@@ -571,6 +587,19 @@ struct HomeDashboardView: View {
     @ViewBuilder
     private func widgetView(_ widget: HomeDashboardModel.WidgetID, theme: ClipFlowTheme) -> some View {
         switch widget {
+        case .dailyReview:
+            IslandWidgetCard(
+                title: widget.title,
+                subtitle: nil,
+                widget: widget,
+                editing: editingWidgets,
+                model: model
+            ) {
+                DailyReviewWidget(model: model.dailyReview) {
+                    model.dailyReviewHistoryOpen = true
+                }
+            }
+
         case .clock:
             IslandWidgetCard(
                 title: widget.title,
@@ -603,11 +632,7 @@ struct HomeDashboardView: View {
                 editing: editingWidgets,
                 model: model
             ) {
-                TextEditor(text: $model.quickNote)
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.foregroundSecondary)
-                    .scrollContentBackground(.hidden)
-                    .focused($noteFocused)
+                NoteTextEditor(text: $model.quickNote, fontSize: 12, foreground: theme.foregroundSecondary, identifier: "jaimo.quickNote.editor", focusRequest: noteFocusRequest)
                     .overlay(alignment: .topLeading) {
                         if model.quickNote.isEmpty {
                             Text("记下稍后要处理的事…")
@@ -619,6 +644,10 @@ struct HomeDashboardView: View {
                     }
                     .frame(minHeight: 80)
                     .accessibilityLabel("快速便签")
+                if model.quickNoteSaveStatus == .failed {
+                    Button("重试保存") { model.flushQuickNote() }
+                        .buttonStyle(GlassButtonStyle(kind: .normal))
+                }
             }
 
         case .memo:

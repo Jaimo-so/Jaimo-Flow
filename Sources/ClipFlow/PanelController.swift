@@ -32,11 +32,11 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private let minimumWorkspaceSize = NSSize(width: 520, height: 420)
 
-    init(model: AppModel, preferences: PreferencesStore) {
+    init(model: AppModel, preferences: PreferencesStore, homeModel providedHomeModel: HomeDashboardModel? = nil) {
         self.model = model
         self.preferences = preferences
         shellModel = IslandShellModel()
-        homeModel = HomeDashboardModel()
+        homeModel = providedHomeModel ?? HomeDashboardModel()
         applicationsModel = ApplicationsModel()
         panel = ClipFlowPanel(
             contentRect: NSRect(origin: .zero, size: preferences.workspaceSize),
@@ -113,7 +113,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         openSettings: Bool = false
     ) {
         if let destination { selectDestination(destination) }
-        if openSettings { homeModel.memoLibraryOpen = false }
+        if openSettings {
+            homeModel.memoLibraryOpen = false
+            homeModel.dailyReviewHistoryOpen = false
+        }
         model.settingsOpen = openSettings
         model.prepareForPresentation()
         applicationsModel.loadIfNeeded()
@@ -133,11 +136,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func hide() {
         guard isPresented else { return }
+        guard homeModel.flushNotes() else {
+            model.showToast("笔记保存失败，内容已保留，请重试关闭")
+            return
+        }
         isPresented = false
         visibilityGeneration += 1
         let generation = visibilityGeneration
         releaseLocalDevices()
-        homeModel.flushQuickNote()
         if shellModel.destination == .vibehub {
             shellModel.vibeHubLibrary.flush()
             shellModel.vibeHubAgent.discardSession()
@@ -158,21 +164,26 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self.panel.alphaValue = 1
                 self.panel.ignoresMouseEvents = false
                 self.model.settingsOpen = false
-                self.homeModel.memoLibraryOpen = false
+                self.homeModel.dailyReviewHistoryOpen = false
                 self.onVisibilityChanged?(false)
             }
         }
     }
 
-    func prepareForTermination() {
+    @discardableResult
+    func prepareForTermination() -> Bool {
+        guard homeModel.flushNotes() else {
+            showExpanded(destination: .home)
+            model.showToast("笔记保存失败，内容已保留，请重试保存后退出")
+            return false
+        }
         homeModel.audioRecorder.finishIfNeeded()
         releaseLocalDevices()
-        homeModel.flushQuickNote()
-        NotificationCenter.default.post(name: .jaimoFlushMemos, object: nil)
         if shellModel.destination == .vibehub {
             shellModel.vibeHubLibrary.flush()
             shellModel.vibeHubAgent.discardSession()
         }
+        return true
     }
 
     private func present(size: NSSize) {
@@ -297,11 +308,14 @@ final class PanelController: NSObject, NSWindowDelegate {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             DispatchQueue.main.async {
-                guard let self, self.panel.isVisible else { return }
-                guard !self.hasBlockingModal else { return }
-                self.hide()
+                self?.handleOutsideClick()
             }
         }
+    }
+
+    func handleOutsideClick() {
+        guard panel.isVisible, !hasBlockingModal else { return }
+        hide()
     }
 
     private var hasBlockingModal: Bool {
@@ -311,7 +325,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             || model.promptDeleteConfirmationOpen
             || model.credentialEditorOpen
             || model.credentialDeleteConfirmationOpen
-            || homeModel.memoLibraryOpen
+            || homeModel.dailyReviewHistoryOpen
             || (shellModel.destination == .vibehub && shellModel.vibeHubAgent.panel != .closed)
     }
 
@@ -415,7 +429,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         if homeModel.memoLibraryOpen {
             if keyCode == UInt16(kVK_Escape) {
-                homeModel.memoLibraryOpen = false
+                homeModel.closeMemoLibrary()
+                return true
+            }
+            return false
+        }
+
+        if homeModel.dailyReviewHistoryOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                homeModel.dailyReviewHistoryOpen = false
                 return true
             }
             return false

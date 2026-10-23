@@ -31,6 +31,33 @@ func withStore(_ body: (SQLiteClipStore) throws -> Void) throws {
 }
 
 do {
+    let reviewDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ClipFlowDailyReviewSelfTest-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: reviewDirectory) }
+    let reviewURL = reviewDirectory.appendingPathComponent("DailyReviews/reviews.json")
+    let reviewStore = try DailyReviewStore(fileURL: reviewURL)
+    let fullReview = "今日完成\n写出完整定义：复盘是回看事实、分析原因和安排下一步。\n\n收获与思考\n保留原文、例子与意义。🙂"
+    try reviewStore.save(dateKey: "2026-10-13", body: fullReview)
+    try require(reviewStore.entry(for: "2026-10-13")?.body == fullReview, "每日复盘保存时丢失正文或换行")
+    try reviewStore.save(dateKey: "2026-10-12", body: "昨天的复盘")
+    try reviewStore.save(dateKey: "2026-10-13", body: fullReview + "\n下一步：继续验证。")
+    try require(reviewStore.entries.count == 2, "同一天重复保存产生多篇复盘")
+    let reopenedReviews = try DailyReviewStore(fileURL: reviewURL)
+    try require(reopenedReviews.entry(for: "2026-10-13")?.body == fullReview + "\n下一步：继续验证。", "重新打开后复盘正文不完整")
+    try require(reopenedReviews.entry(for: "2026-10-12")?.body == "昨天的复盘", "保存今天覆盖了历史复盘")
+    do {
+        try reopenedReviews.save(dateKey: "2026-10-14", body: " \n ")
+        throw SelfTestError.failed("空白复盘被保存")
+    } catch DailyReviewStore.StoreError.emptyContent { }
+    let corruptReviewURL = reviewDirectory.appendingPathComponent("corrupt.json")
+    let corruptReviewData = Data("not-json".utf8)
+    try corruptReviewData.write(to: corruptReviewURL)
+    do {
+        _ = try DailyReviewStore(fileURL: corruptReviewURL)
+        throw SelfTestError.failed("损坏的复盘文件被当作空库")
+    } catch is DecodingError { }
+    try require(try Data(contentsOf: corruptReviewURL) == corruptReviewData, "读取失败改变了原有复盘文件")
+
     let url = ClipClassifier.classify(text: "https://example.com/path?q={value}")
     try require(url.kind == .link && url.category == .link, "URL 必须优先判定为链接")
 
