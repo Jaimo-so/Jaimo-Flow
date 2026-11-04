@@ -8,8 +8,10 @@ enum FlowMotion {
     static let layout = Animation.interactiveSpring(response: 0.34, dampingFraction: 0.90)
     static let content = Animation.easeOut(duration: 0.18)
     static let reduced = Animation.easeOut(duration: 0.10)
-    static let windowIn: TimeInterval = 0.18
-    static let windowOut: TimeInterval = 0.12
+    static let windowIn: TimeInterval = 0.28
+    static let windowOut: TimeInterval = 0.20
+    static let notchHoverDelay: TimeInterval = 0.12
+    static let notchDismissDelay: TimeInterval = 0.30
 
     static func reveal(reduceMotion: Bool, distance: CGFloat = 8) -> AnyTransition {
         reduceMotion ? .opacity : .asymmetric(

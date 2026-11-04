@@ -248,7 +248,7 @@ struct FileRelayPanelView: View {
                         Image(systemName: "tray.and.arrow.down")
                             .font(.system(size: 26))
                             .foregroundStyle(theme.muted)
-                        Text("把文件或文件夹拖到悬浮球")
+                        Text("把文件或文件夹拖到顶部刘海")
                             .font(.system(size: 12.5, weight: .medium))
                         Text("Jaimo Flow 会保存独立副本，原文件不会移动或删除。")
                             .font(.system(size: 10.5))

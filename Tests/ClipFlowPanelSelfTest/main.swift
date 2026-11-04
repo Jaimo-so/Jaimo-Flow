@@ -14,7 +14,7 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
 func requireCentered(_ panel: NSPanel, _ context: String) throws {
     guard let screen = panel.screen else { throw PanelTestError.failed("找不到窗口所在屏幕") }
     try require(abs(panel.frame.midX - screen.visibleFrame.midX) <= 1, "\(context)：窗口没有水平居中")
-    try require(abs(panel.frame.maxY - (screen.visibleFrame.maxY - 8)) <= 1, "\(context)：窗口没有保持靠上位置")
+    try require(abs(panel.frame.maxY - TopNotchGeometry.workspaceTop(on: screen)) <= 1, "\(context)：窗口没有保持靠上位置")
 }
 
 @MainActor
@@ -55,6 +55,95 @@ func finishWindowAnimation(_ panel: NSPanel) {
     while panel.isVisible && Date() < deadline {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
+}
+
+@MainActor
+func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDefaults, directory: URL) async throws {
+    let screenRect = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let air = TopNotchGeometry.frame(screen: screenRect, visible: NSRect(x: 0, y: 60, width: 1440, height: 815))
+    try require(air.midX == 720 && air.maxY == 900 && air.height == 25, "无刘海屏幕入口未贴住菜单栏中央")
+    let hiddenMenu = TopNotchGeometry.frame(screen: screenRect, visible: screenRect)
+    try require(hiddenMenu.height == 24 && hiddenMenu.midX == 720, "自动隐藏菜单栏时入口消失")
+    let hardware = TopNotchGeometry.frame(screen: screenRect, visible: screenRect, safeAreaTop: 38, hardwareWidth: 200)
+    try require(hardware.height == 38 && hardware.width >= 200, "物理刘海屏幕未适配安全区")
+    let offset = TopNotchGeometry.frame(screen: NSRect(x: -1440, y: 200, width: 1440, height: 900),
+                                       visible: NSRect(x: -1440, y: 200, width: 1440, height: 875))
+    try require(offset.midX == -720 && offset.maxY == 1100, "多屏坐标导致入口偏移")
+
+    controller.hide()
+    finishWindowAnimation(controller.panel)
+    let notch = TopNotchController(panelController: controller, relayModel: FileRelayModel(rootURL: directory.appendingPathComponent("Relay")),
+                                   defaults: defaults, monitorsPointer: false)
+    controller.onVisibilityChanged = { [weak notch] in notch?.workspaceVisibilityChanged($0) }
+    defer {
+        controller.onVisibilityChanged = nil
+        notch.hide()
+        controller.hide()
+        finishWindowAnimation(controller.panel)
+    }
+    notch.showIfEnabled()
+    try require(notch.notchPanel.isVisible, "顶部入口未显示")
+    let inside = NSPoint(x: notch.notchPanel.frame.midX, y: notch.notchPanel.frame.midY)
+    let outside = NSPoint(x: notch.notchPanel.frame.minX - 2000, y: notch.notchPanel.frame.minY - 2000)
+    notch.handlePointer(at: inside)
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 220_000_000)
+    try require(!controller.isVisible, "鼠标快速划过入口仍弹出窗口")
+
+    notch.handlePointer(at: inside)
+    try await Task.sleep(nanoseconds: 220_000_000)
+    try require(controller.isVisible, "悬停入口未展开工具站")
+    try requireCentered(controller.panel, "悬停展开后")
+    notch.handlePointer(at: NSPoint(x: controller.panel.frame.midX, y: controller.panel.frame.midY))
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(controller.isVisible, "从刘海移入内容区误收起")
+
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    notch.handlePointer(at: inside)
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(controller.isVisible, "移出后立即返回仍被旧任务关闭")
+
+    model.settingsOpen = true
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(controller.isVisible, "设置浮层打开时移出误关闭")
+    model.settingsOpen = false
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(!controller.isVisible, "移出内容区后未收起")
+    try await Task.sleep(nanoseconds: 300_000_000)
+    finishWindowAnimation(controller.panel)
+    try require(!controller.panel.isVisible, "收起动画结束后窗口仍可见")
+
+    // Reverse a close while its animation is running. The stale completion
+    // must never order out the newly opened window or overwrite its size.
+    notch.handlePointer(at: inside)
+    try await Task.sleep(nanoseconds: 220_000_000)
+    let sizeBefore = controller.panel.frame.size
+    controller.hide()
+    controller.showExpanded()
+    try await Task.sleep(nanoseconds: 450_000_000)
+    try require(controller.isVisible && controller.panel.isVisible && !controller.panel.ignoresMouseEvents,
+                "快速收起重开被旧动画关闭或丢失输入")
+    try require(controller.panel.frame.size == sizeBefore, "展开动画改变了工作区尺寸")
+
+    notch.showRelay()
+    try await Task.sleep(nanoseconds: 300_000_000)
+    try require(notch.relayPanel.isVisible && !controller.isVisible, "文件中转面板与工具站状态冲突")
+    notch.handlePointer(at: NSPoint(x: notch.relayPanel.frame.midX, y: notch.relayPanel.frame.midY))
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(notch.relayPanel.isVisible, "文件中转面板内操作误收起")
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 600_000_000)
+    try require(!notch.relayPanel.isVisible, "移出中转面板后未收起")
+
+    notch.handlePointer(at: inside)
+    notch.isEnabled = false
+    try await Task.sleep(nanoseconds: 250_000_000)
+    try require(!notch.notchPanel.isVisible && !controller.isVisible, "隐藏入口后延迟悬停仍打开工具站")
+    notch.isEnabled = true
+    try require(notch.notchPanel.isVisible, "隐藏后无法恢复入口")
 }
 
 @MainActor
@@ -105,6 +194,18 @@ func runTests() async throws {
     try require(controller.panel.frame.size == resized, "隐藏后重新打开未恢复尺寸")
     try requireCentered(controller.panel, "隐藏重开后")
     home.closeMemoLibrary()
+
+    controller.showExpanded(destination: .prompts)
+    appModel.promptEditorOpen = true
+    appModel.promptDraftTitle = "未保存的标题"
+    appModel.promptDraftBody = "未保存的提示词正文"
+    controller.handleOutsideClick()
+    finishWindowAnimation(controller.panel)
+    try require(!controller.panel.isVisible, "提示词编辑时点击软件外部没有收起窗口")
+    controller.showExpanded(destination: .prompts)
+    try require(appModel.promptEditorOpen, "重新打开后提示词编辑界面未保留")
+    try require(appModel.promptDraftTitle == "未保存的标题" && appModel.promptDraftBody == "未保存的提示词正文", "外部点击收起丢失未保存的提示词")
+    appModel.promptEditorOpen = false
 
     let restored = PreferencesStore(defaults: UserDefaults(suiteName: suite)!)
     try require(restored.workspaceSize == resized, "重新读取偏好设置丢失尺寸")
@@ -212,7 +313,8 @@ func runTests() async throws {
     try require(defaults.string(forKey: "home.quickNote") == expectedQuickNote, "关闭未保存便签输入法提交的完整文本")
     try require(MemoLibraryModel(fileURL: memoURL).selectedItem?.body == expectedMemo, "关闭未保存备忘录连续输入的完整文本")
 
-    print("PASS: 备忘录外部点击保存收起、重开保留界面与选中记录、失败保留；窗口缩放；中文输入与光标保持")
+    try await testTopNotch(controller: controller, model: appModel, defaults: defaults, directory: directory)
+    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放")
 }
 
 try await runTests()

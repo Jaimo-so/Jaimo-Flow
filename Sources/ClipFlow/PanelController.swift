@@ -29,6 +29,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var visibilityGeneration = 0
     private var isApplyingPresentationFrame = false
     var onVisibilityChanged: ((Bool) -> Void)?
+    var isVisible: Bool { isPresented }
 
     private let minimumWorkspaceSize = NSSize(width: 520, height: 420)
 
@@ -110,7 +111,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func showExpanded(
         destination: ToolDestination? = nil,
-        openSettings: Bool = false
+        openSettings: Bool = false,
+        on screen: NSScreen? = nil
     ) {
         if let destination { selectDestination(destination) }
         if openSettings {
@@ -120,7 +122,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.settingsOpen = openSettings
         model.prepareForPresentation()
         applicationsModel.loadIfNeeded()
-        present(size: expandedSizeForActiveScreen())
+        let presentationScreen = screen ?? activeScreen()
+        present(size: expandedSizeForActiveScreen(presentationScreen), on: presentationScreen)
 
         if shellModel.destination == .prompts || shellModel.destination == .clipboard {
             DispatchQueue.main.async {
@@ -153,6 +156,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Stop accepting input immediately; the remaining fade is only visual.
         panel.ignoresMouseEvents = true
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowOut
+        animateWorkspace(opening: false, duration: duration)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -161,6 +165,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self, self.visibilityGeneration == generation, !self.isPresented else { return }
                 self.panel.orderOut(nil)
+                self.panel.contentView?.layer?.removeAnimation(forKey: "notchReveal")
                 self.panel.alphaValue = 1
                 self.panel.ignoresMouseEvents = false
                 self.model.settingsOpen = false
@@ -168,6 +173,12 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self.onVisibilityChanged?(false)
             }
         }
+    }
+
+    func hideAfterPointerExit() {
+        guard !hasBlockingModal, panel.attachedSheet == nil, !panel.inLiveResize,
+              NSEvent.pressedMouseButtons == 0 else { return }
+        hide()
     }
 
     @discardableResult
@@ -186,18 +197,19 @@ final class PanelController: NSObject, NSWindowDelegate {
         return true
     }
 
-    private func present(size: NSSize) {
+    private func present(size: NSSize, on screen: NSScreen?) {
         let wasPresented = isPresented
         visibilityGeneration += 1
         isPresented = true
         panel.ignoresMouseEvents = false
         onVisibilityChanged?(true)
-        positionAtTopCenter(size: size)
+        positionAtTopCenter(size: size, on: screen)
         panel.contentView?.layer?.cornerRadius = 28
         if !panel.isVisible { panel.alphaValue = 0 }
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         let duration = wasPresented || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowIn
+        if !wasPresented { animateWorkspace(opening: true, duration: duration) }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -205,41 +217,68 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func expandedSizeForActiveScreen() -> NSSize {
+    private func animateWorkspace(opening: Bool, duration: TimeInterval) {
+        guard let layer = panel.contentView?.layer else { return }
+        let current = layer.animation(forKey: "notchReveal") == nil ? nil : layer.presentation()?.transform
+        layer.removeAnimation(forKey: "notchReveal")
+        guard duration > 0 else { return }
+        // Transform the rendered surface, keeping layout, resize anchors and
+        // the user's saved workspace dimensions stable throughout the reveal.
+        let scale: CGFloat = 0.96
+        var tucked = CATransform3DMakeScale(scale, scale, 1)
+        tucked.m41 = layer.bounds.width * (0.5 - layer.anchorPoint.x) * (1 - scale)
+        let topY: CGFloat = layer.isGeometryFlipped ? 0 : layer.bounds.height
+        tucked.m42 = (topY - layer.bounds.height * layer.anchorPoint.y) * (1 - scale)
+            + (layer.isGeometryFlipped ? -10 : 10)
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = NSValue(caTransform3D: current ?? (opening ? tucked : CATransform3DIdentity))
+        animation.toValue = NSValue(caTransform3D: opening ? CATransform3DIdentity : tucked)
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: opening ? .easeOut : .easeInEaseOut)
+        animation.fillMode = .forwards
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: "notchReveal")
+    }
+
+    private func expandedSizeForActiveScreen(_ screen: NSScreen?) -> NSSize {
         let preferred = preferences.workspaceSize
-        guard let visible = activeScreen()?.visibleFrame else { return preferred }
+        guard let screen else { return preferred }
+        let visible = screen.visibleFrame
+        let availableHeight = TopNotchGeometry.workspaceTop(on: screen) - visible.minY
         return NSSize(
             width: min(max(minimumWorkspaceSize.width, preferred.width), max(1, visible.width - 24)),
-            height: min(max(minimumWorkspaceSize.height, preferred.height), max(1, visible.height - 16))
+            height: min(max(minimumWorkspaceSize.height, preferred.height), max(1, availableHeight - 16))
         )
     }
 
-    private func positionAtTopCenter(size: NSSize) {
+    private func positionAtTopCenter(size: NSSize, on screen: NSScreen?) {
         // Fitting to a smaller screen must not replace the user's preferred size.
         isApplyingPresentationFrame = true
         defer { isApplyingPresentationFrame = false }
         panel.minSize = NSSize(width: 1, height: 1)
         panel.maxSize = NSSize(width: 10_000, height: 10_000)
-        guard let visible = activeScreen()?.visibleFrame else {
+        guard let screen else {
             panel.setContentSize(size)
             panel.center()
             panel.minSize = minimumWorkspaceSize
             return
         }
+        let visible = screen.visibleFrame
+        let availableHeight = TopNotchGeometry.workspaceTop(on: screen) - visible.minY
         let fittedSize = NSSize(
             width: min(size.width, visible.width - 12),
-            height: min(size.height, visible.height - 12)
+            height: min(size.height, availableHeight - 12)
         )
         let origin = NSPoint(
             x: visible.midX - fittedSize.width / 2,
-            y: visible.maxY - fittedSize.height - 8
+            y: TopNotchGeometry.workspaceTop(on: screen) - fittedSize.height
         )
         panel.setFrame(NSRect(origin: origin, size: fittedSize), display: true)
         panel.minSize = NSSize(
             width: min(minimumWorkspaceSize.width, fittedSize.width),
             height: min(minimumWorkspaceSize.height, fittedSize.height)
         )
-        panel.maxSize = NSSize(width: visible.width - 12, height: visible.height - 12)
+        panel.maxSize = NSSize(width: visible.width - 12, height: availableHeight - 12)
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -256,10 +295,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func alignWorkspaceToTopCenter() {
-        guard let visible = panel.screen?.visibleFrame else { return }
+        guard let screen = panel.screen else { return }
+        let visible = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(
             x: visible.midX - panel.frame.width / 2,
-            y: visible.maxY - panel.frame.height - 8
+            y: TopNotchGeometry.workspaceTop(on: screen) - panel.frame.height
         ))
     }
 
@@ -320,7 +360,6 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private var hasBlockingModal: Bool {
         model.settingsOpen
-            || model.promptEditorOpen
             || model.promptRunnerOpen
             || model.promptDeleteConfirmationOpen
             || model.credentialEditorOpen
