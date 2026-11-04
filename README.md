@@ -27,12 +27,15 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 
 所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron、WebView 或 AI 运行时；界面和核心能力均使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现。
 
-> 当前公开版本：`0.6.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+> 当前公开版本：`0.7.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
 
-## 最新源码更新
+## 0.7.0 版本更新
 
-当前 `main` 分支新增 Vibehub 模块及话术整理 Agent。上述 GitHub Release 下载入口仍对应公开发布版本；要使用本次新增功能，请按照下方“从源码构建”说明运行当前源码。
+0.7.0 新增顶部刘海式悬停入口、每日复盘、Vibehub 模块及话术整理 Agent，可直接从上方 GitHub Releases 下载。完整变更与升级说明见 [0.7.0 发布说明](docs/releases/v0.7.0.md)。
 
+- 顶部中央刘海：适配无物理刘海的 MacBook Air，鼠标移入展开、移出收起，配有开关动画；移除旧菜单栏图标与侧边悬浮球。
+- 每日复盘：按日期记录内容，支持编辑当日内容、保存和历史查看。
+- 完整保留笔记：快速便签和备忘录在关闭编辑界面、离开首页、隐藏或退出时保存；失败时保留内容并允许重试，改进连续输入和中文输入法组合文本的保持。
 - 独立的话术库：按用途分类，以笔记形式保存完整原文、标签、适用场景、术语定义与含义，支持搜索、收藏和完整复制。
 - 自己配置模型 API：填写接口地址、模型名称和 API Key，接入 OpenAI 兼容的 Chat Completions 服务；API Key 保存在 macOS 钥匙串。
 - 先预览再保存：Agent 补全后可逐项修改，只有手动确认才写入话术库。
@@ -64,7 +67,7 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-Flow-0.6.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.7.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
@@ -84,7 +87,7 @@ shasum -a 256 -c Jaimo-Flow-0.6.0-macOS-Apple-Silicon.dmg.sha256
 - 支持搜索、全部/文字/图片/链接/收藏分类、键盘导航、复制回剪贴板、收藏和删除
 - 剪切板内提供独立的 API Key 分组，支持按名称搜索、新建、编辑、复制和确认删除 API Key 或密码；内容默认遮盖，保存在本机 macOS 钥匙串中，不受历史数量上限和清空历史影响
 - 内置独立的本地提示词库，支持分组、搜索、收藏、新建、编辑、删除和使用次数记录
-- Vibehub 独立保存 Vibe Coding 话术，支持笔记式编辑、用途分类、标签、适用场景、术语与含义、搜索、收藏、完整复制和自动保存；本地开发版本首次进入时提供哈希路由示例，并可配置模型 API，让 Agent 整理新话术，先预览修改再手动保存
+- Vibehub 独立保存 Vibe Coding 话术，支持笔记式编辑、用途分类、标签、适用场景、术语与含义、搜索、收藏、完整复制和自动保存；首次进入时提供哈希路由示例，并可配置模型 API，让 Agent 整理新话术，先预览修改再手动保存
 - 可将文字、代码或链接历史保存为提示词；使用 `{{变量名}}` 定义调用时填写的模板变量
 - 长文本预览按片段渐进渲染，首屏只排版开头内容，滚动到底部后继续加载后续片段
 - 连续相同内容按 SHA-256 去重；自身写回剪贴板产生的 change count 会被忽略
@@ -117,7 +120,7 @@ shasum -a 256 -c Jaimo-Flow-0.6.0-macOS-Apple-Silicon.dmg.sha256
 
 开机自动启动需要应用位于 `/Applications`。在 Jaimo Flow 偏好设置中开启相应选项即可。
 
-### Vibehub 话术库（本地开发版本）
+### Vibehub 话术库
 
 从顶部导航打开 Vibehub，点击“新建话术”，填写标题与完整话术原文。每条话术还可记录标签、适用场景和术语与含义；字段分别保存，不缩写原文、定义或意义。“复制话术”只复制完整话术原文，可直接发送给编程 Agent。
 
@@ -214,7 +217,7 @@ API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完
 ./Scripts/package-dmg.sh
 ```
 
-安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.6.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
+安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.7.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
 
 如果更换了 `Resources/AppLogo.png`，重新生成 macOS 图标：
 
