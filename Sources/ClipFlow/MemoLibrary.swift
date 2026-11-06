@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -37,6 +38,7 @@ final class MemoLibraryModel: ObservableObject {
     // Draft text stays out of the published list while the user is typing.
     private var drafts: [UUID: MemoItem] = [:]
     @Published var selectedID: UUID?
+    @Published var query = ""
     @Published private(set) var saveStatus: SaveStatus = .saved
 
     private let fileURL: URL
@@ -62,6 +64,16 @@ final class MemoLibraryModel: ObservableObject {
         }
     }
 
+    var filteredSortedItems: [MemoItem] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = sortedItems
+        guard !needle.isEmpty else { return base }
+        return base.filter {
+            $0.title.localizedCaseInsensitiveContains(needle)
+                || $0.body.localizedCaseInsensitiveContains(needle)
+        }
+    }
+
     var selectedItem: MemoItem? {
         guard let selectedID else { return nil }
         return item(id: selectedID)
@@ -77,7 +89,8 @@ final class MemoLibraryModel: ObservableObject {
 
     @discardableResult
     func createMemo() -> UUID {
-        insertMemo(id: UUID(), title: "新备忘录", body: "")
+        query = ""
+        return insertMemo(id: UUID(), title: "新备忘录", body: "")
     }
 
     /// App-internal preparation for a future local bridge. One stable ID per task.
@@ -144,8 +157,19 @@ final class MemoLibraryModel: ObservableObject {
         guard let selectedID else { return }
         drafts.removeValue(forKey: selectedID)
         records.removeAll { $0.id == selectedID }
-        self.selectedID = sortedItems.first?.id
+        self.selectedID = filteredSortedItems.first?.id ?? sortedItems.first?.id
         markChanged()
+    }
+
+    @discardableResult
+    func copySelectedBody() -> Bool {
+        guard let body = selectedItem?.body,
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(body, forType: .string)
     }
 
     @discardableResult
@@ -210,7 +234,9 @@ struct MemoLibraryOverlay: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var deleteArmed = false
+    @State private var copyFeedback: String?
     @FocusState private var titleFocused: Bool
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
@@ -255,13 +281,63 @@ struct MemoLibraryOverlay: View {
                 Divider().overlay(theme.hairline)
 
                 HStack(spacing: 0) {
-                    ScrollView {
-                        LazyVStack(spacing: 4) {
-                            ForEach(model.sortedItems) { item in
-                                memoRow(item, theme: theme)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 11))
+                                .foregroundStyle(theme.muted)
+                            TextField("搜索标题或正文", text: $model.query)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 11.5))
+                                .focused($searchFocused)
+                                .accessibilityLabel("搜索备忘录")
+                            if !model.query.isEmpty {
+                                Button {
+                                    model.query = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(theme.muted)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("清空备忘录搜索")
                             }
                         }
-                        .padding(9)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(theme.chip.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .padding(.horizontal, 9)
+                        .padding(.top, 9)
+                        .padding(.bottom, 4)
+
+                        if model.filteredSortedItems.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "note.text" : "magnifyingglass")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(theme.muted)
+                                Text(model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "还没有备忘录" : "没有匹配的备忘录")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(theme.muted)
+                                    .multilineTextAlignment(.center)
+                                if !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Button("清空搜索") { model.query = "" }
+                                        .buttonStyle(GlassButtonStyle(kind: .quiet))
+                                        .fixedSize()
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(12)
+                        } else {
+                            ScrollView {
+                                LazyVStack(spacing: 4) {
+                                    ForEach(model.filteredSortedItems) { item in
+                                        memoRow(item, theme: theme)
+                                    }
+                                }
+                                .padding(9)
+                            }
+                        }
                     }
                     .frame(width: 210)
 
@@ -279,10 +355,30 @@ struct MemoLibraryOverlay: View {
                                 .accessibilityLabel("备忘录正文")
 
                             HStack {
-                                Text(selected.updatedAt.formatted(.dateTime.year().month().day().hour().minute()))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(theme.muted)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(selected.updatedAt.formatted(.dateTime.year().month().day().hour().minute()))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(theme.muted)
+                                    if let copyFeedback {
+                                        Text(copyFeedback)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(theme.muted)
+                                    }
+                                }
                                 Spacer()
+                                Button {
+                                    copyFeedback = model.copySelectedBody() ? "已复制正文" : "正文为空，无法复制"
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        if copyFeedback == "已复制正文" || copyFeedback == "正文为空，无法复制" {
+                                            copyFeedback = nil
+                                        }
+                                    }
+                                } label: {
+                                    Label("复制正文", systemImage: "doc.on.doc")
+                                }
+                                .buttonStyle(GlassButtonStyle(kind: .normal))
+                                .disabled(selected.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                .accessibilityLabel("复制备忘录正文")
                                 Button {
                                     model.togglePinned(selected)
                                 } label: {
@@ -352,6 +448,7 @@ struct MemoLibraryOverlay: View {
     private func memoRow(_ item: MemoItem, theme: ClipFlowTheme) -> some View {
         Button {
             deleteArmed = false
+            copyFeedback = nil
             model.selectedID = item.id
         } label: {
             HStack(alignment: .top, spacing: 8) {
@@ -382,6 +479,8 @@ struct MemoLibraryOverlay: View {
 
     private func close() {
         guard model.flush() else { return }
+        model.query = ""
+        copyFeedback = nil
         onClose()
     }
 }
