@@ -210,7 +210,36 @@ func runTests() async throws {
     reopened.deleteSelected()
     reopened.flush()
     try require(MemoLibraryModel(fileURL: fileURL).items.count == 4, "原有删除保存流程失效")
-    print("PASS: 备忘录与便签编辑不逐字刷新共享界面、不写盘与重排；关闭保存最新全文；失败重试与字段兼容")
+
+    // Search filters title/body; deleting while filtered prefers another visible item.
+    let searchModel = MemoLibraryModel(fileURL: fileURL)
+    searchModel.query = "接口文档"
+    try require(searchModel.filteredSortedItems.count == 1, "标题搜索未命中唯一备忘录")
+    try require(searchModel.filteredSortedItems.first?.title == "核对接口文档", "标题搜索结果不正确")
+    searchModel.query = "完整保留记录"
+    try require(searchModel.filteredSortedItems.count == 1, "正文搜索未命中备忘录")
+    searchModel.query = "不存在的关键词XYZ"
+    try require(searchModel.filteredSortedItems.isEmpty, "无匹配搜索应返回空列表")
+    searchModel.query = "整理"
+    try require(searchModel.filteredSortedItems.count >= 1, "部分关键词搜索失败")
+    let visibleID = searchModel.filteredSortedItems[0].id
+    searchModel.selectedID = visibleID
+    searchModel.deleteSelected()
+    try require(searchModel.items.contains { $0.id == visibleID } == false, "删除后记录仍存在")
+    if let nextID = searchModel.selectedID {
+        try require(searchModel.filteredSortedItems.contains { $0.id == nextID }, "删除后选中项不在当前搜索结果中")
+    }
+    searchModel.query = ""
+    let nonempty = searchModel.items.first {
+        !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    try require(nonempty != nil, "搜索自检缺少带正文的备忘录")
+    searchModel.selectedID = nonempty!.id
+    try require(searchModel.copySelectedBody(), "有正文时应能复制到剪贴板")
+    searchModel.createMemo()
+    try require(searchModel.query.isEmpty, "手动新建未清空搜索词")
+    try require(!searchModel.copySelectedBody(), "空正文不应复制成功")
+    print("PASS: 备忘录与便签编辑不逐字刷新共享界面、不写盘与重排；关闭保存最新全文；失败重试与字段兼容；搜索与复制")
 }
 
 try await runTests()
