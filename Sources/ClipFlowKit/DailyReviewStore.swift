@@ -18,6 +18,7 @@ public struct DailyReviewEntry: Codable, Equatable, Identifiable {
 public final class DailyReviewStore {
     public enum StoreError: Error {
         case emptyContent
+        case missingEntry
     }
 
     public private(set) var entries: [DailyReviewEntry]
@@ -51,6 +52,21 @@ public final class DailyReviewStore {
         var next = entries.filter { $0.dateKey != dateKey }
         next.append(entry)
         next.sort { $0.dateKey > $1.dateKey }
+        try persist(next)
+        return entry
+    }
+
+    @discardableResult
+    public func delete(dateKey: String) throws -> DailyReviewEntry {
+        guard let removed = entries.first(where: { $0.dateKey == dateKey }) else {
+            throw StoreError.missingEntry
+        }
+        let next = entries.filter { $0.dateKey != dateKey }
+        try persist(next)
+        return removed
+    }
+
+    private func persist(_ next: [DailyReviewEntry]) throws {
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true,
@@ -60,6 +76,5 @@ public final class DailyReviewStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(next).write(to: fileURL, options: .atomic)
         entries = next
-        return entry
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import ClipFlowKit
 import Foundation
 import SwiftUI
@@ -8,16 +9,18 @@ final class DailyReviewModel: ObservableObject {
     @Published private(set) var entries: [DailyReviewEntry]
     @Published private(set) var errorMessage: String?
     @Published private(set) var activeDate: Date
+    @Published private(set) var toastMessage: String?
 
     private let store: DailyReviewStore?
+    private var toastWork: DispatchWorkItem?
 
     init(fileURL: URL? = nil, now: Date = .now) {
-        activeDate = now
+        activeDate = Calendar.current.startOfDay(for: now)
         do {
             let store = try DailyReviewStore(fileURL: fileURL)
             self.store = store
             entries = store.entries
-            draftText = store.entry(for: Self.dateKey(now))?.body ?? ""
+            draftText = store.entry(for: Self.dateKey(activeDate))?.body ?? ""
         } catch {
             store = nil
             entries = []
@@ -29,18 +32,56 @@ final class DailyReviewModel: ObservableObject {
     var activeDateKey: String { Self.dateKey(activeDate) }
     var characterCount: Int { draftText.filter { !$0.isWhitespace }.count }
     var canSave: Bool { !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var hasUnsavedChanges: Bool {
+        draftText != (store?.entry(for: activeDateKey)?.body ?? "")
+    }
+    var isViewingToday: Bool {
+        Calendar.current.isDateInToday(activeDate)
+    }
+    var canGoToNextDay: Bool {
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: activeDate) ?? activeDate
+        return Self.dateKey(tomorrow) <= Self.dateKey(Date())
+    }
 
     func refreshDay(now: Date = .now) {
-        let nextKey = Self.dateKey(now)
+        let today = Calendar.current.startOfDay(for: now)
+        let nextKey = Self.dateKey(today)
         guard nextKey != activeDateKey else { return }
         // Keep an unsaved previous-day draft attached to its displayed date.
-        guard draftText == (store?.entry(for: activeDateKey)?.body ?? "") else { return }
-        activeDate = now
+        guard !hasUnsavedChanges else { return }
+        activeDate = today
         draftText = store?.entry(for: nextKey)?.body ?? ""
     }
 
+    func goToPreviousDay() {
+        guard let previous = Calendar.current.date(byAdding: .day, value: -1, to: activeDate) else { return }
+        selectDate(previous)
+    }
+
+    func goToNextDay() {
+        guard canGoToNextDay,
+              let next = Calendar.current.date(byAdding: .day, value: 1, to: activeDate) else { return }
+        selectDate(next)
+    }
+
+    func goToToday(now: Date = .now) {
+        selectDate(Calendar.current.startOfDay(for: now))
+    }
+
+    func selectDate(_ date: Date) {
+        let day = Calendar.current.startOfDay(for: date)
+        let key = Self.dateKey(day)
+        guard key != activeDateKey else { return }
+        if hasUnsavedChanges && canSave {
+            guard save(refreshAfterSave: false) else { return }
+        }
+        activeDate = day
+        draftText = store?.entry(for: key)?.body ?? ""
+        errorMessage = nil
+    }
+
     @discardableResult
-    func save() -> Bool {
+    func save(refreshAfterSave: Bool = true) -> Bool {
         guard let store else {
             errorMessage = errorMessage ?? "无法读取本机复盘记录，请检查存储文件。"
             return false
@@ -49,12 +90,57 @@ final class DailyReviewModel: ObservableObject {
             try store.save(dateKey: activeDateKey, body: draftText)
             entries = store.entries
             errorMessage = nil
-            refreshDay()
+            if refreshAfterSave {
+                refreshDay()
+            }
             return true
         } catch {
             errorMessage = "复盘保存失败，输入的内容仍在编辑框中：\(error.localizedDescription)"
             return false
         }
+    }
+
+    @discardableResult
+    func deleteEntry(dateKey: String) -> Bool {
+        guard let store else {
+            errorMessage = errorMessage ?? "无法读取本机复盘记录，请检查存储文件。"
+            return false
+        }
+        do {
+            try store.delete(dateKey: dateKey)
+            entries = store.entries
+            if dateKey == activeDateKey {
+                draftText = ""
+            }
+            errorMessage = nil
+            showToast("已删除该日复盘")
+            return true
+        } catch {
+            errorMessage = "删除复盘失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func copyEntryBody(_ body: String) -> Bool {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let ok = pasteboard.setString(body, forType: .string)
+        if ok {
+            showToast("已复制完整复盘")
+        } else {
+            showToast("复制失败，请重试")
+        }
+        return ok
+    }
+
+    private func showToast(_ message: String) {
+        toastWork?.cancel()
+        toastMessage = message
+        let work = DispatchWorkItem { [weak self] in
+            self?.toastMessage = nil
+        }
+        toastWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
     }
 
     static func dateKey(_ date: Date) -> String {
@@ -83,6 +169,38 @@ struct DailyReviewWidget: View {
         VStack(spacing: 9) {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Button {
+                            model.goToPreviousDay()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(GlassButtonStyle(kind: .quiet))
+                        .accessibilityLabel("前一天")
+
+                        Button {
+                            model.goToNextDay()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(GlassButtonStyle(kind: .quiet))
+                        .disabled(!model.canGoToNextDay)
+                        .accessibilityLabel("后一天")
+
+                        if !model.isViewingToday {
+                            Button("今天") {
+                                model.goToToday()
+                            }
+                            .buttonStyle(GlassButtonStyle(kind: .quiet))
+                            .fixedSize()
+                            .accessibilityLabel("回到今天")
+                        }
+                    }
+
                     Text(model.activeDate.formatted(.dateTime.year().month(.wide).locale(Locale(identifier: "zh_CN"))))
                         .font(.system(size: 10.5))
                         .foregroundStyle(theme.muted)
@@ -95,22 +213,40 @@ struct DailyReviewWidget: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(theme.muted)
                 }
-                .frame(width: 75, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
 
                 Rectangle()
                     .fill(theme.hairline)
                     .frame(width: 1)
 
-                TextEditor(text: $model.draftText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.foregroundSecondary)
-                    .scrollContentBackground(.hidden)
-                    .accessibilityLabel("今天的复盘内容")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ZStack(alignment: .topLeading) {
+                    if model.draftText.isEmpty {
+                        Text(model.isViewingToday
+                             ? "写一点今天的收获、卡点和明天计划…"
+                             : "这一天还没有复盘，写完后点保存。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.muted)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                    TextEditor(text: $model.draftText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(theme.foregroundSecondary)
+                        .scrollContentBackground(.hidden)
+                        .accessibilityLabel(model.isViewingToday ? "今天的复盘内容" : "所选日期的复盘内容")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
+                if model.hasUnsavedChanges {
+                    Text("未保存")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                }
                 Spacer()
                 Text("\(model.characterCount) 字")
                     .font(.system(size: 10.5))
@@ -146,6 +282,8 @@ struct DailyReviewHistoryOverlay: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedDateKey: String?
+    @State private var deleteArmed = false
+    @State private var showingDeleteError = false
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
@@ -183,6 +321,7 @@ struct DailyReviewHistoryOverlay: View {
                                     ForEach(model.entries) { entry in
                                         Button {
                                             selectedDateKey = entry.dateKey
+                                            deleteArmed = false
                                         } label: {
                                             Text(dateLabel(entry.dateKey))
                                                 .font(.system(size: 11.5))
@@ -202,13 +341,61 @@ struct DailyReviewHistoryOverlay: View {
                             Divider().overlay(theme.hairline)
 
                             if let entry = selectedEntry {
-                                ScrollView {
-                                    Text(entry.body)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(theme.foregroundSecondary)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                                        .padding(16)
+                                VStack(spacing: 0) {
+                                    ScrollView {
+                                        Text(entry.body)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(theme.foregroundSecondary)
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                                            .padding(16)
+                                    }
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                                    Divider().overlay(theme.hairline)
+
+                                    HStack(spacing: 8) {
+                                        Button {
+                                            _ = model.copyEntryBody(entry.body)
+                                        } label: {
+                                            Label("复制全文", systemImage: "doc.on.doc")
+                                        }
+                                        .buttonStyle(GlassButtonStyle(kind: .normal))
+                                        .fixedSize()
+
+                                        Button("编辑此日") {
+                                            if let date = DailyReviewModel.date(from: entry.dateKey) {
+                                                model.selectDate(date)
+                                            }
+                                            onClose()
+                                        }
+                                        .buttonStyle(GlassButtonStyle(kind: .primary))
+                                        .fixedSize()
+
+                                        Button(deleteArmed ? "确认删除" : "删除") {
+                                            if deleteArmed {
+                                                if model.deleteEntry(dateKey: entry.dateKey) {
+                                                    deleteArmed = false
+                                                    selectedDateKey = model.entries.first?.dateKey
+                                                } else {
+                                                    showingDeleteError = true
+                                                }
+                                            } else {
+                                                deleteArmed = true
+                                            }
+                                        }
+                                        .buttonStyle(GlassButtonStyle(kind: deleteArmed ? .danger : .quiet))
+                                        .fixedSize()
+
+                                        if deleteArmed {
+                                            Button("取消") { deleteArmed = false }
+                                                .buttonStyle(GlassButtonStyle(kind: .quiet))
+                                                .fixedSize()
+                                        }
+
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(12)
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
@@ -218,9 +405,30 @@ struct DailyReviewHistoryOverlay: View {
                 .frame(width: min(proxy.size.width - 28, 720), height: min(proxy.size.height - 28, 520))
                 .background(theme.card)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                if let toast = model.toastMessage {
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .padding(.bottom, 28)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.opacity)
+                }
             }
         }
-        .onAppear { selectedDateKey = model.entries.first?.dateKey }
+        .onAppear {
+            selectedDateKey = model.entries.first?.dateKey
+            deleteArmed = false
+        }
+        .onChange(of: selectedDateKey) { _ in deleteArmed = false }
+        .alert("无法删除复盘", isPresented: $showingDeleteError) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text(model.errorMessage ?? "请稍后重试。")
+        }
     }
 
     private var selectedEntry: DailyReviewEntry? {
