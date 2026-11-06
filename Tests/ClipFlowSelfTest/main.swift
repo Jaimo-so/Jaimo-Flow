@@ -58,6 +58,22 @@ do {
     } catch is DecodingError { }
     try require(try Data(contentsOf: corruptReviewURL) == corruptReviewData, "读取失败改变了原有复盘文件")
 
+    let deletableURL = reviewDirectory.appendingPathComponent("deletable.json")
+    let deletableStore = try DailyReviewStore(fileURL: deletableURL)
+    try deletableStore.save(dateKey: "2026-10-10", body: "要删的复盘")
+    try deletableStore.save(dateKey: "2026-10-11", body: "要保留的复盘")
+    let removed = try deletableStore.delete(dateKey: "2026-10-10")
+    try require(removed.body == "要删的复盘", "删除未返回被删条目")
+    try require(deletableStore.entries.count == 1, "删除后仍保留了目标复盘")
+    try require(deletableStore.entry(for: "2026-10-11")?.body == "要保留的复盘", "删除误伤了其他日期")
+    try require(deletableStore.entry(for: "2026-10-10") == nil, "删除后仍能读到目标复盘")
+    let reopenedAfterDelete = try DailyReviewStore(fileURL: deletableURL)
+    try require(reopenedAfterDelete.entries.count == 1, "重新打开后删除结果未落盘")
+    do {
+        _ = try reopenedAfterDelete.delete(dateKey: "2026-10-99")
+        throw SelfTestError.failed("删除不存在的复盘应当失败")
+    } catch DailyReviewStore.StoreError.missingEntry { }
+
     let url = ClipClassifier.classify(text: "https://example.com/path?q={value}")
     try require(url.kind == .link && url.category == .link, "URL 必须优先判定为链接")
 
