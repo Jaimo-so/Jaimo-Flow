@@ -371,6 +371,33 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 当前选中的剪贴板记录若是 http/https 链接，返回可打开的网址。
+    var selectedOpenableURL: URL? {
+        guard libraryMode == .history, !isCredentialGroup,
+              let item = selectedItem, item.kind == .link else { return nil }
+        return ClipClassifier.openableURL(from: item.fullText ?? item.title)
+    }
+
+    func openSelectedLink() {
+        guard case .ready = phase else { return }
+        guard let url = selectedOpenableURL else {
+            if libraryMode == .history, selectedItem != nil, !isCredentialGroup {
+                showToast("这条记录不是可打开的链接")
+            }
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            showToast("已在浏览器中打开 · \(url.host ?? url.absoluteString)")
+            if preferences.closeAfterCopy {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    self?.onRequestClose?()
+                }
+            }
+        } else {
+            showToast("无法打开链接，请检查默认浏览器设置")
+        }
+    }
+
     func toggleFavorite() {
         if isCredentialGroup { return }
         if libraryMode == .prompts {

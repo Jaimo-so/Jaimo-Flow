@@ -26,6 +26,18 @@ public enum ClipClassifier {
         return (.text, .text)
     }
 
+    /// 返回可安全交给浏览器打开的网址：仅接受带主机名的 http/https 链接，其余内容返回 nil。
+    public static func openableURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace }),
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else { return nil }
+        return components.url
+    }
+
     public static func title(for text: String, maxLength: Int = 100) -> String {
         let collapsed = text
             .split(whereSeparator: { $0.isWhitespace })

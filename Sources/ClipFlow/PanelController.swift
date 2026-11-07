@@ -574,6 +574,10 @@ final class PanelController: NSObject, NSWindowDelegate {
             model.toggleFavorite()
             return true
         }
+        if command && key == "o", shellModel.destination == .clipboard, model.selectedOpenableURL != nil {
+            model.openSelectedLink()
+            return true
+        }
         if command && (keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete)) {
             model.deleteSelected()
             return true

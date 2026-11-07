@@ -214,7 +214,18 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    try require(
+        ClipClassifier.openableURL(from: "  https://github.com/Jaimo-so/Jaimo-Flow?tab=readme#top \n")?.absoluteString
+            == "https://github.com/Jaimo-so/Jaimo-Flow?tab=readme#top",
+        "首尾空白的 HTTPS 链接应可打开且保留查询与锚点"
+    )
+    try require(ClipClassifier.openableURL(from: "HTTP://example.com")?.host == "example.com", "大写协议的链接应可打开")
+    try require(ClipClassifier.openableURL(from: "file:///etc/passwd") == nil, "file 协议不应被打开")
+    try require(ClipClassifier.openableURL(from: "javascript:alert(1)") == nil, "javascript 协议不应被打开")
+    try require(ClipClassifier.openableURL(from: "https://") == nil, "缺少主机名的链接不应被打开")
+    try require(ClipClassifier.openableURL(from: "https://a.com 和 https://b.com") == nil, "包含空白的多段文本不应被当作链接打开")
+
+    print("Jaimo Flow self-test passed: 35 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)
