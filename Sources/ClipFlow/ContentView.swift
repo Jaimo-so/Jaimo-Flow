@@ -305,6 +305,9 @@ struct ContentView: View {
                     if proxy.size.width > 520 {
                         footerHint(model.isCredentialGroup ? "⌘E" : "⌘S", model.isCredentialGroup ? "编辑" : "收藏")
                     }
+                    if proxy.size.width > 620, model.selectedOpenableURL != nil {
+                        footerHint("⌘O", "打开链接")
+                    }
                     if proxy.size.width > 720 {
                         footerHint(model.libraryMode == .history ? "⌘⌫" : "⌘N", model.libraryMode == .history ? "删除" : "新建")
                         footerHint("⌘,", "设置")
@@ -635,6 +638,17 @@ private struct PreviewView: View {
             .disabled(model.selectedItem == nil)
             .accessibilityLabel(model.selectedItem?.isFavorite == true ? "取消收藏" : "收藏")
             .help(model.selectedItem?.isFavorite == true ? "取消收藏（⌘S）" : "收藏（⌘S）")
+
+            if let url = model.selectedOpenableURL {
+                Button(action: model.openSelectedLink) {
+                    Image(systemName: "safari")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .accessibilityLabel("在浏览器中打开")
+                .help("在浏览器中打开 \(url.host ?? "链接")（⌘O）")
+            }
 
             Button {
                 model.beginCreatePrompt(prefillFromSelection: true)
