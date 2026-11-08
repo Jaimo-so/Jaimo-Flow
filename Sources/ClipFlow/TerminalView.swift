@@ -7,6 +7,7 @@ import WebKit
 @MainActor
 final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler, WKNavigationDelegate {
     @Published private(set) var isOpen = true
+    @Published private(set) var hasSelection = false
     private var master: Int32 = -1
     private var child: pid_t = 0
     private var reader: DispatchSourceRead?
@@ -31,6 +32,8 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
             if isOpen && master < 0 { start() }
             resize(payload["value"])
         case "resize": resize(payload["value"])
+        case "selection":
+            hasSelection = payload["value"] as? Bool ?? false
         case "input":
             guard master >= 0, let value = payload["value"] as? String else { return }
             let bytes = Array(value.utf8)
@@ -63,6 +66,7 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
             guard count > 0 else {
                 self?.stop()
                 self?.isOpen = false
+                self?.hasSelection = false
                 self?.display(Data("\r\n会话已结束。\r\n".utf8))
                 return
             }
@@ -84,6 +88,35 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
         webView.evaluateJavaScript("window.terminalWrite('\(data.base64EncodedString())')", completionHandler: nil)
     }
 
+    private func evaluate(_ script: String, completion: ((Any?) -> Void)? = nil) {
+        webView.evaluateJavaScript(script) { result, _ in
+            guard let completion else { return }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    func copySelection() {
+        evaluate("window.terminalCopySelection()") { result in
+            guard let text = result as? String, !text.isEmpty else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
+    }
+
+    func pasteClipboard() {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        evaluate("window.terminalPaste('\(Data(text.utf8).base64EncodedString())')")
+    }
+
+    func selectAllText() {
+        evaluate("window.terminalSelectAll()")
+    }
+
+    func clearScreen() {
+        evaluate("window.terminalClear()")
+    }
+
     private func stop() {
         reader?.cancel()
         reader = nil
@@ -98,6 +131,7 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
     func closeSession() {
         guard isOpen else { return }
         isOpen = false
+        hasSelection = false
         webView.window?.makeFirstResponder(nil)
         if child > 0 { _ = kill(child, SIGHUP) }
         stop()
@@ -106,6 +140,7 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
     func openSession() {
         guard !isOpen else { return }
         isOpen = true
+        hasSelection = false
         webView.reload()
     }
 
@@ -117,32 +152,82 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
 struct TerminalWorkspace: View {
     @ObservedObject var session: TerminalSession
     let active: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var confirmClose = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            TerminalView(session: session, active: active && session.isOpen)
-                .allowsHitTesting(session.isOpen)
-                .accessibilityHidden(!session.isOpen)
-            if session.isOpen {
-                Button("关闭终端") { session.closeSession() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
-                    .help("结束当前终端会话")
-                    .padding(12)
-            } else {
-                Color(red: 0.098, green: 0.11, blue: 0.125)
-                VStack(spacing: 12) {
-                    Text("终端会话已关闭")
-                        .foregroundStyle(.white.opacity(0.75))
-                    Button("重新打开终端") { session.openSession() }
-                        .buttonStyle(.borderedProminent)
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        VStack(spacing: 0) {
+            toolbar(theme)
+            Rectangle().fill(theme.hairline).frame(height: 0.5)
+            ZStack {
+                TerminalView(session: session, active: active && session.isOpen)
+                    .allowsHitTesting(session.isOpen)
+                    .accessibilityHidden(!session.isOpen)
+                if !session.isOpen {
+                    Color(red: 0.098, green: 0.11, blue: 0.125)
+                    VStack(spacing: 12) {
+                        Text("终端会话已关闭")
+                            .foregroundStyle(.white.opacity(0.75))
+                        Button("重新打开终端") { session.openSession() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .onChange(of: session.isOpen) { open in
+            if !open { confirmClose = false }
+        }
+    }
+
+    private func toolbar(_ theme: ClipFlowTheme) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "terminal")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(theme.muted)
+            Text(session.isOpen ? "会话进行中" : "会话已关闭")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(theme.muted)
+            Spacer(minLength: 8)
+            if session.isOpen {
+                Button("复制选中") { session.copySelection() }
+                    .buttonStyle(GlassButtonStyle(kind: .quiet))
+                    .disabled(!session.hasSelection)
+                    .help("复制选中的终端文本（⌘C）")
+                    .accessibilityLabel("复制选中的终端文本")
+                    .fixedSize()
+                Button("粘贴") { session.pasteClipboard() }
+                    .buttonStyle(GlassButtonStyle(kind: .quiet))
+                    .help("将系统剪贴板粘贴到终端（⌘V）")
+                    .accessibilityLabel("粘贴到终端")
+                    .fixedSize()
+                Button("清屏") { session.clearScreen() }
+                    .buttonStyle(GlassButtonStyle(kind: .quiet))
+                    .help("清空终端屏幕（⌘K），不影响正在运行的命令")
+                    .accessibilityLabel("清空终端屏幕")
+                    .fixedSize()
+                Button(confirmClose ? "确认关闭" : "关闭终端") {
+                    if confirmClose {
+                        session.closeSession()
+                        confirmClose = false
+                    } else {
+                        confirmClose = true
+                    }
+                }
+                .buttonStyle(GlassButtonStyle(kind: confirmClose ? .danger : .quiet))
+                .help(confirmClose ? "再次点击以结束当前会话及其正在运行的命令" : "结束当前终端会话")
+                .accessibilityHint("点击后需要再次确认")
+                .fixedSize()
+                if confirmClose {
+                    Button("取消") { confirmClose = false }
+                        .buttonStyle(GlassButtonStyle(kind: .quiet))
+                        .fixedSize()
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
     }
 }
 

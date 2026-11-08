@@ -374,7 +374,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let shift = flags.contains(.shift)
         let option = flags.contains(.option)
 
-        if command, routeStandardTextCommand(key) {
+        if command, shouldRouteStandardTextCommand(key), routeStandardTextCommand(key) {
             return true
         }
 
@@ -490,7 +490,27 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
 
         // Terminal programs need Escape and the remaining keys without panel shortcuts.
-        if shellModel.destination == .terminal { return false }
+        if shellModel.destination == .terminal {
+            if command, shellModel.terminalSession.isOpen {
+                switch key {
+                case "c":
+                    shellModel.terminalSession.copySelection()
+                    return true
+                case "v":
+                    shellModel.terminalSession.pasteClipboard()
+                    return true
+                case "a":
+                    shellModel.terminalSession.selectAllText()
+                    return true
+                case "k":
+                    shellModel.terminalSession.clearScreen()
+                    return true
+                default:
+                    break
+                }
+            }
+            return false
+        }
 
         if shellModel.destination == .home, option, homeModel.editingWidget != nil {
             if keyCode == UInt16(kVK_UpArrow) {
@@ -625,6 +645,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         case "6": return .terminal
         default: return nil
         }
+    }
+
+    private func shouldRouteStandardTextCommand(_ key: String) -> Bool {
+        guard ["a", "c", "v", "x"].contains(key) else { return true }
+        // Keep copy/paste in settings and other overlays; otherwise let the terminal own them.
+        return !(shellModel.destination == .terminal && !hasBlockingModal)
     }
 
     private func routeStandardTextCommand(_ key: String) -> Bool {
