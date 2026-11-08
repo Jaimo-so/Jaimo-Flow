@@ -25,9 +25,11 @@
 
 Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工具站，并提供位于菜单栏中央的刘海式悬停入口及文件中转功能。首页提供时间、快速便签、多条备忘录、本地录音、镜子和最近应用；应用页集中搜索、收藏并启动本机应用；提示词与剪切板页面负责管理长期复用的模板和临时内容；Vibehub 收集 Vibe Coding 话术，并可通过自己配置的模型 API 辅助分类和补全。
 
-所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron、WebView 或 AI 运行时；界面和核心能力均使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现。
+所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
 
 > 当前公开版本：`0.7.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+
+当前源码版本为 `0.8.0`，新增内置终端，支持关闭和重新打开终端会话；该版本尚未作为 GitHub Release 发布。
 
 ## 0.7.0 版本更新
 
@@ -216,7 +218,7 @@ API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完
 ./Scripts/package-dmg.sh
 ```
 
-安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.7.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
+安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
 
 如果更换了 `Resources/AppLogo.png`，重新生成 macOS 图标：
 
