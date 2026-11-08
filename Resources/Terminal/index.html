@@ -5,10 +5,16 @@ const xterm = window.JaimoXterm;
 const terminal = new xterm.Terminal({cursorBlink:true, fontFamily:'Menlo, monospace', fontSize:13, scrollback:10000, theme:{background:'#191c20',foreground:'#e7e8e8',cursor:'#80d6c7'}});
 const fit = new xterm.FitAddon(); terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit();
 const send = (type, value) => window.webkit.messageHandlers.terminal.postMessage({type,value});
+const decode = value => new TextDecoder().decode(Uint8Array.from(atob(value), c => c.charCodeAt(0)));
 terminal.onData(data => send('input',data));
 terminal.onResize(size => send('resize',size));
+terminal.onSelectionChange(() => send('selection', terminal.hasSelection()));
 window.terminalWrite = value => terminal.write(Uint8Array.from(atob(value), c => c.charCodeAt(0)));
 window.terminalFocus = () => terminal.focus();
+window.terminalCopySelection = () => terminal.getSelection();
+window.terminalPaste = value => { terminal.paste(decode(value)); terminal.focus(); };
+window.terminalSelectAll = () => { terminal.selectAll(); terminal.focus(); };
+window.terminalClear = () => { terminal.clear(); terminal.focus(); };
 new ResizeObserver(() => fit.fit()).observe(document.getElementById('terminal'));
 send('ready', {cols:terminal.cols, rows:terminal.rows}); terminal.focus();
 </script></body></html>
