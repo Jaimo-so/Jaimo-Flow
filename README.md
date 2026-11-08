@@ -27,9 +27,11 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 
 所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
 
-> 当前公开版本：`0.7.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+> 当前版本：`0.8.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
 
-当前源码版本为 `0.8.0`，新增内置终端，支持关闭和重新打开终端会话；该版本尚未作为 GitHub Release 发布。
+## 0.8.0 版本更新
+
+新增内置终端，可在工具站中运行交互式 shell，切换页面时保留会话和输出，并支持关闭及重新打开终端。完整变更与安装说明见 [0.8.0 发布说明](docs/releases/v0.8.0.md)。
 
 ## 0.7.0 版本更新
 
@@ -69,7 +71,7 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-Flow-0.7.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
