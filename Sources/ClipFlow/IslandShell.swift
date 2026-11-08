@@ -8,6 +8,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
     case prompts
     case clipboard
     case vibehub
+    case terminal
 
     var id: String { rawValue }
 
@@ -18,6 +19,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .prompts: return "提示词"
         case .clipboard: return "剪切板"
         case .vibehub: return "Vibehub"
+        case .terminal: return "终端"
         }
     }
 
@@ -28,6 +30,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .prompts: return "sparkles"
         case .clipboard: return "doc.on.clipboard"
         case .vibehub: return "text.bubble"
+        case .terminal: return "terminal"
         }
     }
 }
@@ -40,6 +43,7 @@ final class IslandShellModel: ObservableObject {
 
     private static let destinationKey = "island.lastDestination"
     private let defaults: UserDefaults
+    lazy var terminalSession = TerminalSession()
     lazy var vibeHubLibrary = VibeHubLibraryModel()
     private var vibeHubAgentSubscription: AnyCancellable?
     lazy var vibeHubAgent: VibeHubAgentModel = {
@@ -101,9 +105,17 @@ struct IslandRootView: View {
                 .disabled(libraryModalOpen)
                 .accessibilityHidden(libraryModalOpen)
             Rectangle().fill(theme.hairline).frame(height: 0.5)
-            destinationContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+            ZStack {
+                if shell.destination != .terminal {
+                    destinationContent
+                }
+                TerminalWorkspace(session: shell.terminalSession, active: shell.destination == .terminal)
+                    .opacity(shell.destination == .terminal ? 1 : 0)
+                    .allowsHitTesting(shell.destination == .terminal)
+                    .accessibilityHidden(shell.destination != .terminal)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
         .disabled(model.settingsOpen)
     }
@@ -124,7 +136,7 @@ struct IslandRootView: View {
             HStack(spacing: proxy.size.width < 720 ? 8 : 18) {
                 HStack(spacing: 9) {
                     IslandBrandMark(size: 28)
-                    if proxy.size.width >= 820 {
+                    if proxy.size.width >= 930 {
                         Text("Jaimo Flow")
                             .font(.system(size: 13, weight: .semibold))
                     }
@@ -139,7 +151,7 @@ struct IslandRootView: View {
                             HStack(spacing: 7) {
                                 Image(systemName: destination.symbolName)
                                     .font(.system(size: 13, weight: .medium))
-                                if proxy.size.width >= 650 {
+                                if proxy.size.width >= 760 {
                                     Text(destination.title)
                                         .font(.system(size: 12, weight: shell.destination == destination ? .semibold : .regular))
                                         .lineLimit(1)
@@ -147,7 +159,7 @@ struct IslandRootView: View {
                                 }
                             }
                             .foregroundStyle(shell.destination == destination ? theme.foreground : theme.muted)
-                            .frame(minWidth: proxy.size.width >= 650 ? (destination == .vibehub ? 86 : 70) : 42, maxHeight: .infinity)
+                            .frame(minWidth: proxy.size.width >= 760 ? (destination == .vibehub ? 86 : 70) : 42, maxHeight: .infinity)
                             .background {
                                 if shell.destination == destination {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -229,6 +241,8 @@ struct IslandRootView: View {
                 .id("clipboard-library")
         case .vibehub:
             VibeHubLibraryView(library: shell.vibeHubLibrary, appModel: model, agent: shell.vibeHubAgent)
+        case .terminal:
+            EmptyView()
         }
     }
 
@@ -242,7 +256,7 @@ struct IslandRootView: View {
             switch destination {
             case .prompts: model.setMode(.prompts)
             case .clipboard: model.setMode(.history)
-            case .home, .applications, .vibehub: break
+            case .home, .applications, .vibehub, .terminal: break
             }
         }
     }

@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "ClipFlowSelfTest", targets: ["ClipFlowSelfTest"])
     ],
     targets: [
+        .target(name: "CTerminal", path: "Sources/CTerminal", publicHeadersPath: "include"),
         .systemLibrary(
             name: "CSQLite",
             path: "Sources/CSQLite"
@@ -22,7 +23,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "ClipFlow",
-            dependencies: ["ClipFlowKit"],
+            dependencies: ["ClipFlowKit", "CTerminal"],
             path: "Sources/ClipFlow"
         ),
         .executableTarget(

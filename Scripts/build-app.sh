@@ -3,14 +3,16 @@ set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/Jaimo Flow.app"
+APP_DIR="$BUILD_DIR/Jaimo Flow.buildbundle"
 ARM_MODULE_CACHE="$PROJECT_DIR/.build/module-cache-arm64"
 ARM_BINARY="$PROJECT_DIR/.build/arm64-apple-macosx/release/ClipFlow"
 UPDATER_BINARY="$PROJECT_DIR/.build/arm64-apple-macosx/release/ClipFlowUpdater"
 SIGN_IDENTITY="${CLIPFLOW_SIGN_IDENTITY:--}"
 COMPATIBLE_SDK="${SDKROOT:-$("$PROJECT_DIR/Scripts/swift-sdk-path.sh")}"
 
-mkdir -p "$ARM_MODULE_CACHE"
+mkdir -p "$ARM_MODULE_CACHE" "$BUILD_DIR"
+# Keep temporary build products out of Spotlight app search.
+touch "$BUILD_DIR/.metadata_never_index"
 SDKROOT="$COMPATIBLE_SDK" \
 CLANG_MODULE_CACHE_PATH="$ARM_MODULE_CACHE" \
 SWIFTPM_MODULECACHE_OVERRIDE="$ARM_MODULE_CACHE" \
@@ -26,6 +28,7 @@ cp "$ARM_BINARY" "$APP_DIR/Contents/MacOS/Jaimo Flow"
 cp "$UPDATER_BINARY" "$APP_DIR/Contents/Helpers/ClipFlowUpdater"
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+cp -R "$PROJECT_DIR/Resources/Terminal" "$APP_DIR/Contents/Resources/Terminal"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     /usr/bin/codesign --force --sign - "$APP_DIR/Contents/Helpers/ClipFlowUpdater"

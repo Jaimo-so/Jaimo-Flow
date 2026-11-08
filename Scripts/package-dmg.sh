@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
-APP_DIR="$PROJECT_DIR/build/Jaimo Flow.app"
+APP_DIR="$PROJECT_DIR/build/Jaimo Flow.buildbundle"
 DIST_DIR="$PROJECT_DIR/dist"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/Resources/Info.plist")"
 DMG_PATH="$DIST_DIR/Jaimo-Flow-${VERSION}-macOS-Apple-Silicon.dmg"

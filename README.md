@@ -188,14 +188,13 @@ API Key 分组的内容保存在 macOS 钥匙串中，不写入上述 SQLite 数
 - 至少一个与当前 Swift 编译器兼容的 macOS SDK（Xcode 或 Command Line Tools 提供）
 - Swift 5.9 或更高版本
 
-构建并打开应用：
+构建应用：
 
 ```bash
 ./Scripts/build-app.sh
-open "build/Jaimo Flow.app"
 ```
 
-构建脚本只使用 Swift Package Manager 和 macOS 系统框架，并在 `build/Jaimo Flow.app` 生成一个临时签名的应用包。脚本会先验证系统默认 SDK；如果 Command Line Tools 中的 Swift 编译器与默认 SDK 版本不一致，会自动选择机器上已安装的兼容 SDK。SDK 只决定编译时使用的系统接口，最低运行版本仍由 `arm64-apple-macosx13.0` 构建目标决定。
+构建脚本只使用 Swift Package Manager 和 macOS 系统框架，并在 `build/Jaimo Flow.buildbundle` 生成一个临时签名的应用包。构建产物不直接打开；安装后从 `/Applications/Jaimo Flow.app` 运行，避免出现重复的应用入口。脚本会先验证系统默认 SDK；如果 Command Line Tools 中的 Swift 编译器与默认 SDK 版本不一致，会自动选择机器上已安装的兼容 SDK。SDK 只决定编译时使用的系统接口，最低运行版本仍由 `arm64-apple-macosx13.0` 构建目标决定。
 
 运行开发期自检：
 

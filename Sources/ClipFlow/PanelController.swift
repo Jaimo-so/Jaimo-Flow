@@ -321,7 +321,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             switch destination {
             case .prompts: model.setMode(.prompts)
             case .clipboard: model.setMode(.history)
-            case .home, .applications, .vibehub: break
+            case .home, .applications, .vibehub, .terminal: break
             }
         }
     }
@@ -489,6 +489,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             return true
         }
 
+        // Terminal programs need Escape and the remaining keys without panel shortcuts.
+        if shellModel.destination == .terminal { return false }
+
         if shellModel.destination == .home, option, homeModel.editingWidget != nil {
             if keyCode == UInt16(kVK_UpArrow) {
                 homeModel.moveSelectedWidget(by: -1)
@@ -514,7 +517,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                     panel?.firstResponder?.tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
                 }
                 return true
-            case .home:
+            case .home, .terminal:
                 return false
             }
         }
@@ -619,6 +622,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case "3": return .prompts
         case "4": return .clipboard
         case "5": return .vibehub
+        case "6": return .terminal
         default: return nil
         }
     }
