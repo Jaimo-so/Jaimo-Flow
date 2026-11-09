@@ -90,6 +90,8 @@ final class AppModel: ObservableObject {
     @Published var focusArea: FocusArea = .other
 
     let preferences: PreferencesStore
+    let screenshotExtension = ScreenshotExtension()
+    let translationExtension = TranslationExtension()
     let updateManager: UpdateManager
     var clipboardMonitor: ClipboardMonitor?
     var onRequestClose: (() -> Void)?

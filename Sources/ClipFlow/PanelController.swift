@@ -25,6 +25,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let applicationsModel: ApplicationsModel
     private var localKeyMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var globalPointerMonitor: Any?
+    private var localPointerMonitor: Any?
+    private var pendingPointerExit: DispatchWorkItem?
+    private var resumeAfterPointerExit = false
+    private weak var hiddenModalWindow: NSWindow?
+    private weak var hiddenSheet: NSWindow?
     private var isPresented = false
     private var visibilityGeneration = 0
     private var isApplyingPresentationFrame = false
@@ -67,6 +73,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
+        panel.acceptsMouseMovedEvents = true
 
         let rootView = IslandRootView(
             model: model,
@@ -76,7 +83,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             onClose: { [weak self] in self?.hide() },
             onQuit: { NSApp.terminate(nil) }
         )
-        let hostingView = ClipFlowHostingView(rootView: rootView)
+        let hostingView = ClipFlowHostingView(rootView: AppearanceRootView(preferences: preferences, content: rootView))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -90,11 +97,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         homeModel.audioRecorder.onWillRevealRecording = { [weak self] in self?.hide() }
         installKeyMonitor()
         installOutsideClickMonitor()
+        installPointerExitMonitor()
     }
 
     deinit {
         if let localKeyMonitor { NSEvent.removeMonitor(localKeyMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+        if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor) }
+        if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor) }
+        pendingPointerExit?.cancel()
     }
 
     func toggle() {
@@ -119,11 +130,20 @@ final class PanelController: NSObject, NSWindowDelegate {
             homeModel.memoLibraryOpen = false
             homeModel.dailyReviewHistoryOpen = false
         }
-        model.settingsOpen = openSettings
-        model.prepareForPresentation()
+        if !resumeAfterPointerExit || openSettings {
+            model.settingsOpen = openSettings
+        }
+        if !resumeAfterPointerExit { model.prepareForPresentation() }
         applicationsModel.loadIfNeeded()
         let presentationScreen = screen ?? activeScreen()
         present(size: expandedSizeForActiveScreen(presentationScreen), on: presentationScreen)
+        if resumeAfterPointerExit {
+            hiddenSheet?.orderFront(nil)
+            hiddenModalWindow?.makeKeyAndOrderFront(nil)
+            hiddenSheet = nil
+            hiddenModalWindow = nil
+            resumeAfterPointerExit = false
+        }
 
         if shellModel.destination == .prompts || shellModel.destination == .clipboard {
             DispatchQueue.main.async {
@@ -137,22 +157,27 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.updateManager.checkForUpdates()
     }
 
-    func hide() {
+    func hide(preserveDialogs: Bool = false) {
         guard isPresented else { return }
         guard homeModel.flushNotes() else {
             model.showToast("笔记保存失败，内容已保留，请重试关闭")
             return
         }
         isPresented = false
+        resumeAfterPointerExit = preserveDialogs
+        pendingPointerExit?.cancel()
+        pendingPointerExit = nil
         visibilityGeneration += 1
         let generation = visibilityGeneration
         releaseLocalDevices()
         if shellModel.destination == .vibehub {
             shellModel.vibeHubLibrary.flush()
-            shellModel.vibeHubAgent.discardSession()
+            if !preserveDialogs { shellModel.vibeHubAgent.discardSession() }
         }
-        model.cancelCredentialEditor()
-        model.credentialDeleteConfirmationOpen = false
+        if !preserveDialogs {
+            model.cancelCredentialEditor()
+            model.credentialDeleteConfirmationOpen = false
+        }
         // Stop accepting input immediately; the remaining fade is only visual.
         panel.ignoresMouseEvents = true
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowOut
@@ -168,17 +193,66 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self.panel.contentView?.layer?.removeAnimation(forKey: "notchReveal")
                 self.panel.alphaValue = 1
                 self.panel.ignoresMouseEvents = false
-                self.model.settingsOpen = false
-                self.homeModel.dailyReviewHistoryOpen = false
+                if !preserveDialogs {
+                    self.model.settingsOpen = false
+                    self.homeModel.dailyReviewHistoryOpen = false
+                }
                 self.onVisibilityChanged?(false)
             }
         }
     }
 
     func hideAfterPointerExit() {
-        guard !hasBlockingModal, panel.attachedSheet == nil, !panel.inLiveResize,
-              NSEvent.pressedMouseButtons == 0 else { return }
-        hide()
+        guard !shellModel.terminalSession.isChoosingFolder,
+              !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else { return }
+        guard homeModel.flushNotes() else {
+            model.showToast("笔记保存失败，内容已保留，请重试关闭")
+            return
+        }
+        hiddenSheet = panel.attachedSheet
+        hiddenSheet?.orderOut(nil)
+        hiddenModalWindow = NSApp.modalWindow
+        hiddenModalWindow?.orderOut(nil)
+        hide(preserveDialogs: true)
+    }
+
+    private func installPointerExitMonitor() {
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .leftMouseUp, .rightMouseUp]
+        globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            DispatchQueue.main.async { self?.handlePointerMovement() }
+        }
+        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.handlePointerMovement() }
+            return event
+        }
+    }
+
+    private func pointerIsOverApplication() -> Bool {
+        let point = NSEvent.mouseLocation
+        return NSApp.windows.contains { window in
+            window.isVisible && (window === panel || window === panel.attachedSheet || window === NSApp.modalWindow || window is TopNotchPanel || window is FileRelayPanel)
+                && window.frame.insetBy(dx: -6, dy: -6).contains(point)
+        }
+    }
+
+    private func handlePointerMovement() {
+        guard isPresented else { return }
+        if shellModel.terminalSession.isChoosingFolder || pointerIsOverApplication() {
+            pendingPointerExit?.cancel()
+            pendingPointerExit = nil
+            return
+        }
+        guard pendingPointerExit == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingPointerExit = nil
+            guard self.isPresented, !self.shellModel.terminalSession.isChoosingFolder,
+                  !self.pointerIsOverApplication(),
+                  NSEvent.pressedMouseButtons == 0, !self.panel.inLiveResize else { return }
+            self.hideAfterPointerExit()
+        }
+        pendingPointerExit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + FlowMotion.notchDismissDelay, execute: work)
     }
 
     @discardableResult
@@ -354,7 +428,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func handleOutsideClick() {
-        guard panel.isVisible, !hasBlockingModal else { return }
+        guard panel.isVisible, !hasBlockingModal,
+              !shellModel.terminalSession.isChoosingFolder else { return }
         hide()
     }
 
@@ -370,6 +445,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String) -> Bool {
         guard isPresented else { return false }
+        if ScreenshotShortcutRecorder.isRecording { return false }
         let command = flags.contains(.command)
         let shift = flags.contains(.shift)
         let option = flags.contains(.option)

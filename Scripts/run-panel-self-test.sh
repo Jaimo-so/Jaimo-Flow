@@ -22,8 +22,10 @@ swiftc \
     -target arm64-apple-macosx13.0 \
     -I "$DEBUG_DIR/Modules" \
     -I "$PROJECT_DIR/Sources/CSQLite" \
+    -I "$DEBUG_DIR/CTerminal.build" \
     "$PROJECT_DIR/Tests/ClipFlowPanelSelfTest/main.swift" \
     "${app_objects[@]}" \
+    "$DEBUG_DIR"/CTerminal.build/*.o \
     "$DEBUG_DIR"/ClipFlowKit.build/*.o \
     -o "$DEBUG_DIR/ClipFlowPanelSelfTest"
 

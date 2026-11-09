@@ -58,6 +58,18 @@ final class IslandShellModel: ObservableObject {
     }
 }
 
+struct AppearanceRootView: View {
+    @ObservedObject var preferences: PreferencesStore
+    @Environment(\.colorScheme) private var systemColorScheme
+    let content: IslandRootView
+
+    var body: some View {
+        content
+            .environment(\.colorScheme, preferences.appearance == .black ? .dark : systemColorScheme)
+            .preferredColorScheme(preferences.appearance == .black ? .dark : nil)
+    }
+}
+
 struct IslandRootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var shell: IslandShellModel

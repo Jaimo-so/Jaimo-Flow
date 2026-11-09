@@ -6,7 +6,10 @@ import WebKit
 
 @MainActor
 final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler, WKNavigationDelegate {
-    @Published private(set) var isOpen = true
+    @Published private(set) var isOpen = false
+    @Published private(set) var hasOpenedSession = false
+    private(set) var isChoosingFolder = false
+    private var workingDirectory: URL?
     private var master: Int32 = -1
     private var child: pid_t = 0
     private var reader: DispatchSourceRead?
@@ -49,7 +52,8 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
 
     private func start() {
         var fd: Int32 = -1
-        let pid = jaimo_start_shell(&fd)
+        guard let workingDirectory else { return }
+        let pid = workingDirectory.path.withCString { jaimo_start_shell(&fd, $0) }
         guard pid > 0 else {
             display(Data("无法启动终端会话。\r\n".utf8))
             return
@@ -103,8 +107,24 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
         stop()
     }
 
-    func openSession() {
-        guard !isOpen else { return }
+    func chooseFolderAndOpen() {
+        guard !isOpen, !isChoosingFolder else { return }
+        isChoosingFolder = true
+        defer { isChoosingFolder = false }
+        let panel = NSOpenPanel()
+        panel.title = "选择终端打开的文件夹"
+        panel.prompt = "打开终端"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        workingDirectory = folder
+        openSession()
+    }
+
+    private func openSession() {
+        guard !isOpen, workingDirectory != nil else { return }
+        hasOpenedSession = true
         isOpen = true
         webView.reload()
     }
@@ -117,14 +137,15 @@ final class TerminalSession: NSObject, ObservableObject, WKScriptMessageHandler,
 struct TerminalWorkspace: View {
     @ObservedObject var session: TerminalSession
     let active: Bool
+    @State private var confirmingClose = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            TerminalView(session: session, active: active && session.isOpen)
+            TerminalView(session: session, active: active && session.isOpen && !confirmingClose)
                 .allowsHitTesting(session.isOpen)
                 .accessibilityHidden(!session.isOpen)
             if session.isOpen {
-                Button("关闭终端") { session.closeSession() }
+                Button("关闭终端") { confirmingClose = true }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -135,13 +156,21 @@ struct TerminalWorkspace: View {
             } else {
                 Color(red: 0.098, green: 0.11, blue: 0.125)
                 VStack(spacing: 12) {
-                    Text("终端会话已关闭")
+                    Text(session.hasOpenedSession ? "终端会话已关闭" : "选择一个文件夹，在其中打开终端")
                         .foregroundStyle(.white.opacity(0.75))
-                    Button("重新打开终端") { session.openSession() }
+                    Button(session.hasOpenedSession ? "重新打开终端" : "选择文件夹") {
+                        session.chooseFolderAndOpen()
+                    }
                         .buttonStyle(.borderedProminent)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .alert("关闭终端？", isPresented: $confirmingClose) {
+            Button("取消", role: .cancel) { }
+            Button("关闭终端", role: .destructive) { session.closeSession() }
+        } message: {
+            Text("关闭终端会结束当前会话，正在运行的命令可能会被中断。")
         }
     }
 }

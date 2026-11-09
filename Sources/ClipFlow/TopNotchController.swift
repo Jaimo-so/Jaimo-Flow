@@ -201,7 +201,9 @@ final class TopNotchController: NSObject {
         guard running, isEnabled, !contextMenuOpen, !isDraggingFiles else { return }
         let overNotch = notchPanel.frame.contains(point)
         if !overNotch { requiresPointerExit = false }
-        let overWorkspace = panelController.isVisible && panelController.panel.frame.insetBy(dx: -6, dy: -6).contains(point)
+        let overWorkspace = panelController.isVisible && (panelController.panel.frame.insetBy(dx: -6, dy: -6).contains(point)
+            || (panelController.panel.attachedSheet?.frame.insetBy(dx: -6, dy: -6).contains(point) ?? false)
+            || (NSApp.modalWindow?.frame.insetBy(dx: -6, dy: -6).contains(point) ?? false))
         let overRelay = relayPresented && relayPanel.frame.insetBy(dx: -6, dy: -6).contains(point)
         if overNotch || overWorkspace || overRelay {
             pendingClose?.cancel()

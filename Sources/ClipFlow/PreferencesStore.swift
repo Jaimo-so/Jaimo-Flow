@@ -1,6 +1,14 @@
 import Foundation
 import ServiceManagement
 
+enum FlowAppearance: String, CaseIterable, Identifiable {
+    case system
+    case black
+
+    var id: String { rawValue }
+    var title: String { self == .system ? "跟随系统" : "黑色" }
+}
+
 struct ExcludedApp: Codable, Hashable, Identifiable {
     let name: String
     let bundleID: String
@@ -14,6 +22,7 @@ final class PreferencesStore: ObservableObject {
         static let excludedApps = "excludedApps"
         static let promptGroupOrder = "promptGroupOrder"
         static let workspaceSize = "island.workspaceSize"
+        static let appearance = "appearance"
     }
 
     static let defaultExcludedApps = [
@@ -24,6 +33,10 @@ final class PreferencesStore: ObservableObject {
 
     @Published var closeAfterCopy: Bool {
         didSet { defaults.set(closeAfterCopy, forKey: Key.closeAfterCopy) }
+    }
+
+    @Published var appearance: FlowAppearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance) }
     }
 
     @Published private(set) var excludedApps: [ExcludedApp] {
@@ -51,6 +64,7 @@ final class PreferencesStore: ObservableObject {
         self.defaults = defaults
         defaults.register(defaults: [Key.closeAfterCopy: true])
         closeAfterCopy = defaults.bool(forKey: Key.closeAfterCopy)
+        appearance = FlowAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         promptGroupOrder = defaults.stringArray(forKey: Key.promptGroupOrder) ?? []
         if let saved = defaults.dictionary(forKey: Key.workspaceSize),
            let width = saved["width"] as? Double,

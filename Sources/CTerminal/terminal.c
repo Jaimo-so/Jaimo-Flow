@@ -2,16 +2,19 @@
 #include <util.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <sys/ioctl.h>
 
-pid_t jaimo_start_shell(int *master) {
+pid_t jaimo_start_shell(int *master, const char *directory) {
     const char *shell = getenv("SHELL");
     if (!shell || shell[0] != '/') shell = "/bin/zsh";
-    const char *home = getenv("HOME");
     struct winsize size = { .ws_row = 24, .ws_col = 80 };
     pid_t pid = forkpty(master, NULL, NULL, &size);
     if (pid == 0) {
-        if (home) chdir(home);
+        if (!directory || chdir(directory) != 0) {
+            perror("无法进入所选文件夹");
+            _exit(1);
+        }
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
         execl(shell, shell, "-l", (char *)NULL);

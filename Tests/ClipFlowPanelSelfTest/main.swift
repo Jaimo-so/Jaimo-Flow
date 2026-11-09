@@ -107,14 +107,27 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     model.settingsOpen = true
     notch.handlePointer(at: outside)
     try await Task.sleep(nanoseconds: 400_000_000)
-    try require(controller.isVisible, "设置浮层打开时移出误关闭")
-    model.settingsOpen = false
-    notch.handlePointer(at: outside)
-    try await Task.sleep(nanoseconds: 400_000_000)
-    try require(!controller.isVisible, "移出内容区后未收起")
+    try require(!controller.isVisible, "设置浮层打开时移出内容区未收起")
     try await Task.sleep(nanoseconds: 300_000_000)
     finishWindowAnimation(controller.panel)
     try require(!controller.panel.isVisible, "收起动画结束后窗口仍可见")
+    try require(model.settingsOpen, "移出后设置浮层状态丢失")
+    controller.showExpanded()
+    try require(model.settingsOpen, "重新打开后设置浮层未恢复")
+    model.settingsOpen = false
+
+    controller.showExpanded(destination: .prompts)
+    model.promptEditorOpen = true
+    model.promptDraftBody = "保留草稿"
+    controller.hideAfterPointerExit()
+    try require(!controller.isVisible && model.promptEditorOpen, "移出时提示词弹窗状态丢失")
+    try require(model.promptDraftBody == "保留草稿", "移出时丢失提示词草稿")
+    finishWindowAnimation(controller.panel)
+    controller.showExpanded(destination: .prompts)
+    try require(model.promptEditorOpen && model.promptDraftBody == "保留草稿", "重新打开未恢复提示词弹窗和草稿")
+    model.promptEditorOpen = false
+    controller.hide()
+    finishWindowAnimation(controller.panel)
 
     // Reverse a close while its animation is running. The stale completion
     // must never order out the newly opened window or overwrite its size.

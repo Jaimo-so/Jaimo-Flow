@@ -1,5 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="xterm.css"><style>
 html,body,#terminal{width:100%;height:100%;margin:0;overflow:hidden;background:#191c20} #terminal{box-sizing:border-box;padding:14px 16px}.xterm{height:100%}
+.xterm .xterm-viewport::-webkit-scrollbar{display:none}
 </style></head><body><div id="terminal"></div><script src="xterm.js"></script><script>
 const xterm = window.JaimoXterm;
 const terminal = new xterm.Terminal({cursorBlink:true, fontFamily:'Menlo, monospace', fontSize:13, scrollback:10000, theme:{background:'#191c20',foreground:'#e7e8e8',cursor:'#80d6c7'}});

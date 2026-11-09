@@ -36,8 +36,8 @@ struct ClipFlowTheme {
     var danger: Color { scheme == .dark ? oklch(0.73, 0.14, 25) : oklch(0.52, 0.17, 25) }
     var star: Color { scheme == .dark ? oklch(0.80, 0.12, 85) : oklch(0.58, 0.12, 85) }
 
-    var canvas: Color { scheme == .dark ? oklch(0.22, 0.003, 90) : oklch(0.975, 0.004, 90) }
-    var card: Color { scheme == .dark ? oklch(0.27, 0.003, 90) : .white }
+    var canvas: Color { scheme == .dark ? Color(red: 0.045, green: 0.045, blue: 0.055) : oklch(0.975, 0.004, 90) }
+    var card: Color { scheme == .dark ? Color(red: 0.09, green: 0.09, blue: 0.105) : .white }
     var primaryFill: Color { foreground }
     var onPrimary: Color { scheme == .dark ? oklch(0.22, 0.003, 90) : .white }
     var accentWash: Color { accent.opacity(scheme == .dark ? 0.13 : 0.07) }
@@ -46,7 +46,7 @@ struct ClipFlowTheme {
         canvas.opacity(0.96)
     }
     var glassSecondary: Color {
-        scheme == .dark ? oklch(0.27, 0.003, 90, 0.90) : Color.white.opacity(0.90)
+        scheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.125).opacity(0.96) : Color.white.opacity(0.90)
     }
     var chip: Color { foreground.opacity(scheme == .dark ? 0.055 : 0.035) }
     var chipHigh: Color { foreground.opacity(scheme == .dark ? 0.10 : 0.07) }

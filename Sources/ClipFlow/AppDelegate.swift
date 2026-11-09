@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.showToast(error.localizedDescription)
         }
 
+        model.screenshotExtension.restore()
+        model.translationExtension.restore()
         model.load()
         monitor.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak model] in

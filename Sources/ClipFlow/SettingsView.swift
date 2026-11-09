@@ -1,15 +1,73 @@
 import SwiftUI
+import Carbon
+
+@MainActor
+final class ScreenshotShortcutRecorder: ObservableObject {
+    static var isRecording = false
+    @Published var action: ScreenshotExtension.ShortcutAction?
+    @Published var hint = "请按下 Control、Option 或 Command 与其他按键的组合；按 Esc 取消。"
+    private var monitor: Any?
+    private weak var screenshotExtension: ScreenshotExtension?
+
+    func start(_ action: ScreenshotExtension.ShortcutAction, extension screenshotExtension: ScreenshotExtension) {
+        cancel()
+        self.action = action
+        self.screenshotExtension = screenshotExtension
+        hint = "请按下 Control、Option 或 Command 与其他按键的组合；按 Esc 取消。"
+        Self.isRecording = true
+        screenshotExtension.beginShortcutRecording()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.receive(event) }
+            return nil
+        }
+    }
+
+    private func receive(_ event: NSEvent) {
+        if event.keyCode == UInt16(kVK_Escape) { cancel(); return }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.intersection([.control, .option, .command]).isEmpty else {
+            hint = "请至少使用 Control、Option 或 Command 中的一个修饰键。"
+            return
+        }
+        let special: [UInt16: String] = [UInt16(kVK_Space): "Space", UInt16(kVK_Return): "↩", UInt16(kVK_Tab): "⇥", UInt16(kVK_Delete): "⌫", UInt16(kVK_ForwardDelete): "⌦", UInt16(kVK_LeftArrow): "←", UInt16(kVK_RightArrow): "→", UInt16(kVK_UpArrow): "↑", UInt16(kVK_DownArrow): "↓"]
+        let character = event.charactersIgnoringModifiers ?? ""
+        guard let label = special[event.keyCode] ?? (character.count == 1 && character.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) && !(0xE000...0xF8FF).contains($0.value) } ? character.uppercased() : nil) else {
+            hint = "请使用字母、数字、符号或常用按键。"
+            return
+        }
+        var modifiers: UInt32 = 0
+        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        let shortcut = ScreenshotExtension.Shortcut(keyCode: UInt32(event.keyCode), modifiers: modifiers, keyLabel: label)
+        guard let action, let screenshotExtension else { cancel(); return }
+        cancel()
+        screenshotExtension.setShortcut(shortcut, for: action)
+    }
+
+    func cancel() {
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        Self.isRecording = false
+        action = nil
+        screenshotExtension?.endShortcutRecording()
+        screenshotExtension = nil
+    }
+}
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     private let homeModel: HomeDashboardModel?
     @ObservedObject private var preferences: PreferencesStore
     @ObservedObject private var updater: UpdateManager
+    @ObservedObject private var screenshotExtension: ScreenshotExtension
+    @ObservedObject private var translationExtension: TranslationExtension
     @Environment(\.colorScheme) private var colorScheme
     @State private var clearArmed = false
     @State private var disarmWork: DispatchWorkItem?
     @State private var hoveredExcludedID: String?
     @State private var clearHover = false
+    @StateObject private var shortcutRecorder = ScreenshotShortcutRecorder()
     @FocusState private var launchToggleFocused: Bool
 
     init(model: AppModel, homeModel: HomeDashboardModel? = nil) {
@@ -17,6 +75,8 @@ struct SettingsView: View {
         self.homeModel = homeModel
         preferences = model.preferences
         updater = model.updateManager
+        screenshotExtension = model.screenshotExtension
+        translationExtension = model.translationExtension
     }
 
     var body: some View {
@@ -60,7 +120,13 @@ struct SettingsView: View {
                             }
                             rowDivider(theme)
                             settingRow("外观", theme: theme) {
-                                valueText("跟随系统", theme: theme)
+                                Picker("外观", selection: $preferences.appearance) {
+                                    ForEach(FlowAppearance.allCases) { appearance in
+                                        Text(appearance.title).tag(appearance)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 120)
                             }
                             rowDivider(theme)
                             settingRow("复制后关闭窗口", theme: theme) {
@@ -75,6 +141,77 @@ struct SettingsView: View {
                         if let homeModel {
                             settingsGroup(title: "首页照片", theme: theme) {
                                 MirrorPhotoSettingsView(model: homeModel)
+                            }
+                        }
+
+                        settingsGroup(title: "扩展", theme: theme) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("截图与贴图").font(.system(size: 13, weight: .semibold))
+                                    Text(screenshotExtension.installed ? (screenshotExtension.running ? "运行中" : "已停止") : "未安装")
+                                        .font(.system(size: 11.5)).foregroundStyle(theme.muted)
+                                }
+                                Spacer()
+                                if !screenshotExtension.installed {
+                                    Button("安装并启动") { screenshotExtension.install() }
+                                        .buttonStyle(GlassButtonStyle(kind: .primary))
+                                } else {
+                                    Button(screenshotExtension.running ? "停止" : "启动") {
+                                        if screenshotExtension.running { screenshotExtension.stop() } else { screenshotExtension.start() }
+                                    }.buttonStyle(GlassButtonStyle(kind: .normal))
+                                    Button("卸载") { screenshotExtension.uninstall() }
+                                        .buttonStyle(GlassButtonStyle(kind: .normal))
+                                }
+                            }.padding(.vertical, 7)
+                            if screenshotExtension.installed {
+                                Text("使用下方快捷键进行区域截图或将剪贴板图片贴到屏幕。拖动贴图可移动，双击关闭，右键可复制或关闭。")
+                                    .font(.system(size: 11.5)).foregroundStyle(theme.muted)
+                                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                                HStack {
+                                    Button(shortcutRecorder.action == .capture ? "请按快捷键…" : "截图快捷键  \(screenshotExtension.captureShortcut.label)") {
+                                        shortcutRecorder.start(.capture, extension: screenshotExtension)
+                                    }
+                                    Button(shortcutRecorder.action == .pin ? "请按快捷键…" : "贴图快捷键  \(screenshotExtension.pinShortcut.label)") {
+                                        shortcutRecorder.start(.pin, extension: screenshotExtension)
+                                    }
+                                }
+                                .buttonStyle(GlassButtonStyle(kind: .normal))
+                                .padding(.top, 8)
+                                if shortcutRecorder.action != nil {
+                                    Text(shortcutRecorder.hint).font(.system(size: 11.5)).foregroundStyle(theme.muted)
+                                }
+                                Text("截图后可标注、复制、另存为 PNG 或直接贴图。首次使用请在系统设置中允许屏幕录制。")
+                                    .font(.system(size: 11.5)).foregroundStyle(theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                            }
+                            if let error = screenshotExtension.error {
+                                Text(error).font(.system(size: 11.5)).foregroundStyle(theme.danger)
+                                    .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                            }
+                        }
+
+                        settingsGroup(title: "识别与翻译", theme: theme) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("截图识别与翻译").font(.system(size: 13, weight: .semibold))
+                                    Text(translationExtension.installed ? (translationExtension.running ? "运行中" : "已停止") : "未安装")
+                                        .font(.system(size: 11.5)).foregroundStyle(theme.muted)
+                                }
+                                Spacer()
+                                if !translationExtension.installed {
+                                    Button("安装并启动") { translationExtension.install() }.buttonStyle(GlassButtonStyle(kind: .primary))
+                                } else {
+                                    if translationExtension.running { Button("打开") { translationExtension.show() }.buttonStyle(GlassButtonStyle(kind: .normal)) }
+                                    Button(translationExtension.running ? "停止" : "启动") {
+                                        if translationExtension.running { translationExtension.stop() } else { translationExtension.start() }
+                                    }.buttonStyle(GlassButtonStyle(kind: .normal))
+                                    Button("卸载") { translationExtension.uninstall() }.buttonStyle(GlassButtonStyle(kind: .normal))
+                                }
+                            }.padding(.vertical, 7)
+                            Text("⌃⌥S 截图识别并翻译，也可输入文字或读取图片。需要 macOS 15 及以上版本。")
+                                .font(.system(size: 11.5)).foregroundStyle(theme.muted).fixedSize(horizontal: false, vertical: true)
+                            if let error = translationExtension.error {
+                                Text(error).font(.system(size: 11.5)).foregroundStyle(theme.danger).fixedSize(horizontal: false, vertical: true)
                             }
                         }
 
@@ -236,6 +373,7 @@ struct SettingsView: View {
             .focusSection()
             .onTapGesture { }
         }
+        .onDisappear { shortcutRecorder.cancel() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("偏好设置")
         .onAppear {
