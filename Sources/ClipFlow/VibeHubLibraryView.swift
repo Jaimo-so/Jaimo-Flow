@@ -190,6 +190,14 @@ struct VibeHubLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(library.selectedID == item.id ? [.isSelected] : [])
+                    .contextMenu {
+                        Button("复制话术") { copyPhrase(item.phrase) }
+                            .disabled(item.phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button(item.isFavorite ? "取消收藏" : "收藏") {
+                            library.selectedID = item.id
+                            library.updateSelected(\.isFavorite, to: !item.isFavorite)
+                        }
+                    }
                 }
             }.padding(9)
         }
@@ -264,21 +272,25 @@ struct VibeHubLibraryView: View {
                     .buttonStyle(GlassButtonStyle(kind: .quiet)).fixedSize()
             }
             Button {
-                if let monitor = appModel.clipboardMonitor {
-                    switch monitor.write(text: item.phrase) {
-                    case .failure: appModel.showToast("复制失败，请重试")
-                    case .text, .image: appModel.showToast("已复制完整话术")
-                    }
-                    return
-                }
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                if pasteboard.setString(item.phrase, forType: .string) { appModel.showToast("已复制完整话术") }
-                else { appModel.showToast("复制失败，请重试") }
+                copyPhrase(item.phrase)
             } label: { Label("复制话术", systemImage: "doc.on.doc") }
             .buttonStyle(GlassButtonStyle(kind: .primary)).fixedSize()
             .disabled(item.phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+    }
+
+    private func copyPhrase(_ phrase: String) {
+        if let monitor = appModel.clipboardMonitor {
+            switch monitor.write(text: phrase) {
+            case .failure: appModel.showToast("复制失败，请重试")
+            case .text, .image: appModel.showToast("已复制完整话术")
+            }
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if pasteboard.setString(phrase, forType: .string) { appModel.showToast("已复制完整话术") }
+        else { appModel.showToast("复制失败，请重试") }
     }
 
     private func textSection(_ title: String, detail: String, keyPath: WritableKeyPath<VibeHubItem, String>, height: CGFloat, theme: ClipFlowTheme) -> some View {
