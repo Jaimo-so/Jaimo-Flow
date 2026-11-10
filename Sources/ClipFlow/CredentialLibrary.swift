@@ -79,13 +79,35 @@ extension AppModel {
         do {
             let secret = try credentialStore.secret(id: entry.id)
             switch clipboardMonitor.write(secret: secret) {
-            case .text: finishCopy(message: "已复制 API Key / 密码")
+            case .text:
+                scheduleCredentialClipboardClear()
+                finishCopy(message: "已复制 API Key / 密码 · \(Int(credentialClipboardClearDelay)) 秒后自动从剪贴板清除")
             case .failure: showToast("复制失败，请重试")
             case .image: break
             }
         } catch {
             showToast("读取失败：\(error.localizedDescription)")
         }
+    }
+
+    func scheduleCredentialClipboardClear() {
+        credentialClipboardClearWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.credentialClipboardClearWork = nil
+            if self.clipboardMonitor?.clearSecretIfUnchanged() == true {
+                self.showToast("已从剪贴板清除 API Key / 密码")
+            }
+        }
+        credentialClipboardClearWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + credentialClipboardClearDelay, execute: work)
+    }
+
+    /// Called on quit so a copied secret never outlives the app on the clipboard.
+    func clearCredentialClipboardNow() {
+        credentialClipboardClearWork?.cancel()
+        credentialClipboardClearWork = nil
+        clipboardMonitor?.clearSecretIfUnchanged()
     }
 
     func confirmDeleteCredential() {

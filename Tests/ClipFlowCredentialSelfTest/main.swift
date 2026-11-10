@@ -55,11 +55,23 @@ try MainActor.assumeIsolated {
     try require(try store.loadEntries().count == 1 && store.secret(id: id) == " new-password ", "编辑创建了重复条目或损坏内容")
 
     monitor.start()
+    model.credentialClipboardClearDelay = 0.3
     model.copySelected()
     try require(pasteboard.string(forType: .string) == " new-password ", "复制内容错误")
     try require(pasteboard.types?.contains(.init("org.nspasteboard.ConcealedType")) == true, "缺少敏感剪贴板标记")
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     try require(captures.isEmpty, "密钥被再次收录到普通历史")
+    try require(pasteboard.string(forType: .string) == nil, "复制的密钥没有自动从剪贴板清除")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+    try require(captures.isEmpty, "自动清除剪贴板被误收录到普通历史")
+    // A newer copy made by the user must survive the scheduled clear.
+    model.copySelected()
+    pasteboard.clearContents()
+    pasteboard.setString("user copied later", forType: .string)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+    try require(pasteboard.string(forType: .string) == "user copied later", "自动清除误删了用户之后复制的内容")
+    try require(captures.count == 1 && captures[0].fullText == "user copied later", "用户之后复制的内容没有被收录")
+    captures.removeAll()
     // Verify concealed content from another writer is also ignored.
     let concealed = NSPasteboardItem()
     concealed.setString("external-test-secret", forType: .string)
@@ -89,5 +101,5 @@ try MainActor.assumeIsolated {
     model.saveCredentialDraft()
     try require(model.credentialEditorOpen && model.credentialDraftSecret == "dummy", "失败时丢失草稿")
     model.cancelCredentialEditor()
-    print("PASS: API Key 创建、持久化、编辑、名称搜索、精确复制、敏感内容隔离、确认删除与失败保留草稿")
+    print("PASS: API Key 创建、持久化、编辑、名称搜索、精确复制、到时自动清除剪贴板、敏感内容隔离、确认删除与失败保留草稿")
 }

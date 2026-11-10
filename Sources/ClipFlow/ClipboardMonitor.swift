@@ -20,6 +20,7 @@ final class ClipboardMonitor {
     private var timer: Timer?
     private var lastChangeCount: Int
     private var ignoredChangeCount: Int?
+    private var secretChangeCount: Int?
 
     private struct ImagePayload {
         let data: Data
@@ -85,7 +86,21 @@ final class ClipboardMonitor {
         guard pasteboard.writeObjects([item]) else { return .failure }
         ignoredChangeCount = pasteboard.changeCount
         lastChangeCount = pasteboard.changeCount
+        secretChangeCount = pasteboard.changeCount
         return .text(characterCount: secret.count)
+    }
+
+    /// Clears the pasteboard only if it still holds the secret written by `write(secret:)`.
+    /// Anything the user copied afterwards is left untouched.
+    @discardableResult
+    func clearSecretIfUnchanged() -> Bool {
+        guard let secretChangeCount else { return false }
+        self.secretChangeCount = nil
+        guard pasteboard.changeCount == secretChangeCount else { return false }
+        pasteboard.clearContents()
+        ignoredChangeCount = pasteboard.changeCount
+        lastChangeCount = pasteboard.changeCount
+        return true
     }
 
     private func poll() {
