@@ -94,6 +94,9 @@ final class AppModel: ObservableObject {
     let translationExtension = TranslationExtension()
     let updateManager: UpdateManager
     var clipboardMonitor: ClipboardMonitor?
+    /// Seconds before a copied API Key / password is wiped from the clipboard.
+    var credentialClipboardClearDelay: TimeInterval = 60
+    var credentialClipboardClearWork: DispatchWorkItem?
     var onRequestClose: (() -> Void)?
 
     private var store: SQLiteClipStore?
