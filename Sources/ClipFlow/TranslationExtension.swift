@@ -9,12 +9,14 @@ final class TranslationExtension: ObservableObject {
     private let defaults: UserDefaults
     private let installedKey = "extensions.translation.installed"
     private let enabledKey = "extensions.translation.enabled"
+    private let historyKey = "extensions.translation.history"
+    private let targetKey = "extensions.translation.target"
     @Published private(set) var installed: Bool
     @Published private(set) var running = false
     @Published var error: String?
     @Published var source = ""
     @Published var result = ""
-    @Published var target = "zh-Hans"
+    @Published var target: String { didSet { defaults.set(target, forKey: targetKey) } }
     @Published var requestID = 0
     @Published var history: [TranslationRecord]
     private var hotKey: HotKeyManager?
@@ -25,7 +27,8 @@ final class TranslationExtension: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         installed = defaults.bool(forKey: installedKey)
-        history = (try? JSONDecoder().decode([TranslationRecord].self, from: defaults.data(forKey: "extensions.translation.history") ?? Data())) ?? []
+        target = defaults.string(forKey: targetKey) ?? "zh-Hans"
+        history = (try? JSONDecoder().decode([TranslationRecord].self, from: defaults.data(forKey: historyKey) ?? Data())) ?? []
     }
     func restore() { if installed && defaults.bool(forKey: enabledKey) { start() } }
     func install() { installed = true; defaults.set(true, forKey: installedKey); start() }
@@ -108,14 +111,27 @@ final class TranslationExtension: ObservableObject {
     func saveResult(source: String, result: String, target: String) {
         history.insert(TranslationRecord(source: source, result: result, target: target, date: Date()), at: 0)
         if history.count > 100 { history.removeLast(history.count - 100) }
-        if let data = try? JSONEncoder().encode(history) { defaults.set(data, forKey: "extensions.translation.history") }
+        persistHistory()
     }
     func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
-    func clearHistory() { history.removeAll(); defaults.removeObject(forKey: "extensions.translation.history") }
+    func deleteRecord(_ id: TranslationRecord.ID) { history.removeAll { $0.id == id }; persistHistory() }
+    func clearHistory() { history.removeAll(); defaults.removeObject(forKey: historyKey) }
+    private func persistHistory() {
+        if history.isEmpty { defaults.removeObject(forKey: historyKey) }
+        else if let data = try? JSONEncoder().encode(history) { defaults.set(data, forKey: historyKey) }
+    }
 }
 
 struct TranslationRecord: Codable, Identifiable {
     var id = UUID(); let source: String; let result: String; let target: String; let date: Date
+
+    /// 按关键字过滤：忽略大小写与全半角差异，原文或译文任一包含即可；空关键字返回全部。
+    static func filter(_ records: [TranslationRecord], query: String) -> [TranslationRecord] {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return records }
+        let options: String.CompareOptions = [.caseInsensitive, .widthInsensitive, .diacriticInsensitive]
+        return records.filter { $0.source.range(of: keyword, options: options) != nil || $0.result.range(of: keyword, options: options) != nil }
+    }
 }
 
 @available(macOS 15.0, *)
@@ -126,7 +142,10 @@ private struct TranslationExtensionView: View {
     @State private var pendingTarget = ""
     @State private var pendingID = 0
     @State private var showHistory = false
+    @State private var historyQuery = ""
+    @State private var confirmClear = false
     private let languages = [("简体中文", "zh-Hans"), ("英语", "en"), ("日语", "ja"), ("韩语", "ko"), ("法语", "fr"), ("德语", "de"), ("西班牙语", "es")]
+    private func languageName(_ code: String) -> String { languages.first { $0.1 == code }?.0 ?? code }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -137,11 +156,35 @@ private struct TranslationExtensionView: View {
                 Button(showHistory ? "返回" : "历史") { showHistory.toggle() }
             }
             if showHistory {
-                HStack { Text("翻译历史").font(.headline); Spacer(); Button("清空历史") { model.clearHistory() } }
-                List(model.history) { item in
-                    Button { model.source = item.source; model.result = item.result; model.target = item.target; showHistory = false } label: {
-                        VStack(alignment: .leading, spacing: 4) { Text(item.source).lineLimit(2); Text(item.result).foregroundStyle(.secondary).lineLimit(2) }
-                    }.buttonStyle(.plain)
+                HStack {
+                    Text("翻译历史").font(.headline)
+                    Text("\(model.history.count) 条").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("清空历史") { confirmClear = true }.disabled(model.history.isEmpty)
+                }
+                TextField("搜索原文或译文", text: $historyQuery).textFieldStyle(.roundedBorder)
+                let records = TranslationRecord.filter(model.history, query: historyQuery)
+                if records.isEmpty {
+                    Text(model.history.isEmpty ? "还没有翻译记录。" : "没有匹配“\(historyQuery.trimmingCharacters(in: .whitespacesAndNewlines))”的记录。")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(records) { item in
+                        Button { model.source = item.source; model.result = item.result; model.target = item.target; showHistory = false } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.source).lineLimit(2)
+                                Text(item.result).foregroundStyle(.secondary).lineLimit(2)
+                                Text("\(languageName(item.target)) · \(item.date.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.tertiary)
+                            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("点击载入这条记录，右键可复制或删除")
+                        .contextMenu {
+                            Button("复制原文") { model.copy(item.source) }
+                            Button("复制译文") { model.copy(item.result) }
+                            Divider()
+                            Button("删除这条记录", role: .destructive) { model.deleteRecord(item.id) }
+                        }
+                    }
                 }
             } else {
                 HStack { Text("原文").font(.headline); Spacer(); Button("复制原文") { model.copy(model.source) } }
@@ -159,6 +202,10 @@ private struct TranslationExtensionView: View {
             Text("截图快捷键 ⌃⌥S · 首次翻译时，系统可能提示下载语言资源。") .font(.caption).foregroundStyle(.secondary)
         }
         .padding(18)
+        .confirmationDialog("清空全部 \(model.history.count) 条翻译历史？", isPresented: $confirmClear) {
+            Button("清空历史", role: .destructive) { model.clearHistory(); historyQuery = "" }
+            Button("取消", role: .cancel) {}
+        } message: { Text("清空后无法恢复。") }
         .onChange(of: model.requestID) { _ in
             pendingID = model.requestID; pendingSource = model.source; pendingTarget = model.target
             configuration = TranslationSession.Configuration(source: nil, target: Locale.Language(identifier: pendingTarget))
