@@ -133,6 +133,7 @@ final class HomeDashboardModel: ObservableObject {
     }
     @Published var memoLibraryOpen = false
     @Published var dailyReviewHistoryOpen = false
+    @Published var recordingHistoryOpen = false
 
     private enum Key {
         static let quickNote = "home.quickNote"
@@ -441,8 +442,17 @@ struct HomeDashboardView: View {
                 .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
             }
         }
+        .overlay {
+            if model.recordingHistoryOpen {
+                RecordingHistoryOverlay(model: audioRecorderModel) {
+                    model.recordingHistoryOpen = false
+                }
+                .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
+            }
+        }
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.memoLibraryOpen)
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.dailyReviewHistoryOpen)
+        .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.recordingHistoryOpen)
         .onReceive(NotificationCenter.default.publisher(for: .jaimoFocusQuickNote)) { _ in
             noteFocusRequest += 1
         }
@@ -731,7 +741,9 @@ struct HomeDashboardView: View {
                 editing: editingWidgets,
                 model: model
             ) {
-                AudioRecorderWidget(model: audioRecorderModel)
+                AudioRecorderWidget(model: audioRecorderModel) {
+                    model.recordingHistoryOpen = true
+                }
             }
 
         case .camera:

@@ -129,6 +129,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if openSettings {
             homeModel.memoLibraryOpen = false
             homeModel.dailyReviewHistoryOpen = false
+            homeModel.recordingHistoryOpen = false
         }
         if !resumeAfterPointerExit || openSettings {
             model.settingsOpen = openSettings
@@ -196,6 +197,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 if !preserveDialogs {
                     self.model.settingsOpen = false
                     self.homeModel.dailyReviewHistoryOpen = false
+                    self.homeModel.recordingHistoryOpen = false
                 }
                 self.onVisibilityChanged?(false)
             }
@@ -440,6 +442,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             || model.credentialEditorOpen
             || model.credentialDeleteConfirmationOpen
             || homeModel.dailyReviewHistoryOpen
+            || homeModel.recordingHistoryOpen
             || (shellModel.destination == .vibehub && shellModel.vibeHubAgent.panel != .closed)
     }
 
@@ -553,6 +556,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         if homeModel.dailyReviewHistoryOpen {
             if keyCode == UInt16(kVK_Escape) {
                 homeModel.dailyReviewHistoryOpen = false
+                return true
+            }
+            return false
+        }
+
+        if homeModel.recordingHistoryOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                homeModel.recordingHistoryOpen = false
                 return true
             }
             return false
