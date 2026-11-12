@@ -85,7 +85,7 @@ shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
 - 将多个文件或文件夹拖到刘海可打开文件中转站；中转站保存独立本地副本，可再次拖出、定位、移除或二次确认清空
 - 首页包含时间、快速便签、多条备忘录、本地录音、镜子和最近使用应用；管理模式支持拖拽排序、隐藏、恢复，并可用尺寸菜单或右下角手柄调整尺寸档位
 - 备忘录支持多条内容、标题、正文、置顶和删除，不与快速便签或剪切板历史混存；备忘录和快速便签编辑期间只保留内存修改，关闭编辑界面、离开首页、隐藏窗口或正常退出时统一保存，备忘录列表内切换记录不会提前保存；保存失败保留编辑内容并支持重试
-- 录音支持开始、暂停、继续、完成、实时音量反馈和在访达中定位；M4A 文件只保存在本机 Application Support 目录
+- 录音支持开始、暂停、继续、完成、实时音量反馈；完成后可在组件中播放最近一条，或打开「历史录音」搜索、播放、重命名、复制路径、在访达中显示和二次确认删除；M4A 文件只保存在本机 Application Support 目录
 - 镜子支持 16:9 横图和手机竖图，组件宽高比跟随照片；正常状态只显示照片或水平镜像的本机实时画面，点击即可切换，照片管理位于右键菜单
 - 应用页扫描 `/Applications`、`/System/Applications` 和 `~/Applications`，支持搜索、收藏、启动和最近使用记录
 - 每 0.4 秒读取 `NSPasteboard.changeCount`，自动记录文字、代码、HTTP(S) 链接和图片
@@ -211,13 +211,14 @@ API Key 分组的内容保存在 macOS 钥匙串中，不写入上述 SQLite 数
 ./Scripts/run-self-test.sh
 ./Scripts/run-credential-self-test.sh
 ./Scripts/run-memo-self-test.sh
+./Scripts/run-recorder-self-test.sh
 ./Scripts/run-vibehub-self-test.sh
 ./Scripts/run-vibehub-agent-self-test.sh
 ```
 
 API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完成后删除测试条目，不操作用户保存的密钥。
 
-备忘录自检验证备忘录与快速便签编辑、停顿和切换记录期间不保存，关闭时保存最新完整内容，保存失败后保留内容并重试，以及创建、重复调用和存储兼容行为。Vibehub 自检验证分类、搜索、长文保存和复制；Agent 自检使用模拟模型响应，验证接口配置、可编辑预览、关闭清空、手动保存和失败重试，不调用真实模型服务。
+备忘录自检验证备忘录与快速便签编辑、停顿和切换记录期间不保存，关闭时保存最新完整内容，保存失败后保留内容并重试，以及创建、重复调用和存储兼容行为。录音自检验证历史列表按时间排序、按名称搜索、重命名与删除，使用临时目录，不触及用户本机录音。Vibehub 自检验证分类、搜索、长文保存和复制；Agent 自检使用模拟模型响应，验证接口配置、可编辑预览、关闭清空、手动保存和失败重试，不调用真实模型服务。
 
 生成可下载的 macOS 安装镜像：
 
@@ -259,6 +260,7 @@ Sources/ClipFlowUpdater/   独立更新助手，负责安全替换与失败回�
 Sources/CSQLite/           SQLite 系统库桥接
 Tests/ClipFlowSelfTest/    可直接运行的核心自检
 Tests/ClipFlowMemoSelfTest/  备忘录创建、存储兼容与重复调用自检
+Tests/ClipFlowRecorderSelfTest/  录音历史列表、搜索、重命名与删除自检
 Tests/ClipFlowVibeHubSelfTest/  话术库分类、保存、搜索与复制自检
 Tests/ClipFlowVibeHubAgentSelfTest/  模型接口、预览确认与关闭清空自检
 Resources/                 Info.plist、原始 Logo 和 AppIcon.icns
