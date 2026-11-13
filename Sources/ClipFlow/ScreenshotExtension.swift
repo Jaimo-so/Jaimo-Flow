@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// The first bundled extension. Installation and running state are stored independently.
@@ -198,30 +199,161 @@ final class ScreenshotExtension: ObservableObject {
         panel.isReleasedWhenClosed = false
         let view = PinnedImageView(frame: NSRect(origin: .zero, size: frame.size))
         view.image = image
+        view.baseSize = size
+        view.zoom = scale
+        view.onCloseAll = { [weak self] in self?.closeAllPins() }
         view.imageScaling = .scaleProportionallyUpOrDown
         view.autoresizingMask = [.width, .height]
         panel.contentView = view
         windows.append(panel)
         panel.orderFrontRegardless()
     }
+
+    /// Closes every pinned image at once, used by the pin context menu.
+    func closeAllPins() {
+        windows.forEach { $0.close() }
+        windows.removeAll()
+    }
 }
 
-private final class PinnedImageView: NSImageView {
+/// A floating pinned screenshot. Supports dragging, double-click to close, scroll / pinch to zoom
+/// around the pointer, opacity presets and saving as PNG from the context menu.
+final class PinnedImageView: NSImageView {
+    /// The image's natural size in points; zoom is expressed relative to it.
+    var baseSize: NSSize = .zero
+    var zoom: CGFloat = 1
+    var onCloseAll: (() -> Void)?
+    static let minZoom: CGFloat = 0.1
+    static let maxZoom: CGFloat = 5
+    static let opacityPresets: [CGFloat] = [1, 0.8, 0.6, 0.4]
+
+    private lazy var zoomLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .white
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        label.layer?.cornerRadius = 6
+        label.isHidden = true
+        addSubview(label)
+        return label
+    }()
+    private var hideLabelWork: DispatchWorkItem?
+
     override func mouseDown(with event: NSEvent) {
         if event.clickCount >= 2 { window?.close() }
         else { window?.performDrag(with: event) }
     }
+
+    override func scrollWheel(with event: NSEvent) {
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 8
+        guard delta != 0 else { return }
+        // Scrolling up enlarges, matching common image viewers; ~1% per point of precise scroll.
+        let factor = pow(1.01, delta)
+        applyZoom(zoom * factor, anchor: event.locationInWindow)
+    }
+
+    override func magnify(with event: NSEvent) {
+        applyZoom(zoom * (1 + event.magnification), anchor: event.locationInWindow)
+    }
+
+    /// Clamps a requested zoom level to the supported range.
+    static func clampedZoom(_ value: CGFloat) -> CGFloat {
+        min(maxZoom, max(minZoom, value))
+    }
+
+    /// Resizes the pin window to `newZoom`, keeping the point under `anchor` (window coordinates) fixed.
+    func applyZoom(_ newZoom: CGFloat, anchor: NSPoint? = nil) {
+        guard let window, baseSize.width > 0, baseSize.height > 0 else { return }
+        let target = Self.clampedZoom(newZoom)
+        guard abs(target - zoom) > 0.0001 else { showZoomLabel(); return }
+        let old = window.frame
+        let newSize = NSSize(width: max(24, baseSize.width * target), height: max(24, baseSize.height * target))
+        let point = anchor ?? NSPoint(x: old.width / 2, y: old.height / 2)
+        let rx = old.width > 0 ? point.x / old.width : 0.5
+        let ry = old.height > 0 ? point.y / old.height : 0.5
+        let origin = NSPoint(x: old.minX + point.x - newSize.width * rx,
+                             y: old.minY + point.y - newSize.height * ry)
+        zoom = target
+        window.setFrame(NSRect(origin: origin, size: newSize), display: true)
+        showZoomLabel()
+    }
+
+    private func showZoomLabel() {
+        zoomLabel.stringValue = "\(Int((zoom * 100).rounded()))%"
+        zoomLabel.sizeToFit()
+        let size = NSSize(width: zoomLabel.frame.width + 14, height: zoomLabel.frame.height + 6)
+        zoomLabel.frame = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2,
+                                 width: size.width, height: size.height)
+        zoomLabel.isHidden = false
+        hideLabelWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.zoomLabel.isHidden = true }
+        hideLabelWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
         menu.addItem(withTitle: "复制图片", action: #selector(copyImage), keyEquivalent: "")
+        menu.addItem(withTitle: "另存为 PNG…", action: #selector(saveImage), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "放大", action: #selector(zoomIn), keyEquivalent: "")
+        menu.addItem(withTitle: "缩小", action: #selector(zoomOut), keyEquivalent: "")
+        let actual = menu.addItem(withTitle: "实际大小（100%）", action: #selector(actualSize), keyEquivalent: "")
+        actual.state = abs(zoom - 1) < 0.005 ? .on : .off
+        let opacityItem = NSMenuItem(title: "不透明度", action: nil, keyEquivalent: "")
+        let opacityMenu = NSMenu()
+        let current = window?.alphaValue ?? 1
+        for value in Self.opacityPresets {
+            let item = NSMenuItem(title: "\(Int(value * 100))%", action: #selector(setOpacity(_:)), keyEquivalent: "")
+            item.representedObject = value
+            item.target = self
+            item.state = abs(current - value) < 0.01 ? .on : .off
+            opacityMenu.addItem(item)
+        }
+        opacityItem.submenu = opacityMenu
+        menu.addItem(opacityItem)
+        menu.addItem(.separator())
         menu.addItem(withTitle: "关闭贴图", action: #selector(closePin), keyEquivalent: "")
-        for item in menu.items { item.target = self }
+        menu.addItem(withTitle: "关闭所有贴图", action: #selector(closeAll), keyEquivalent: "")
+        for item in menu.items where item.action != nil { item.target = self }
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
+
     @objc private func copyImage() {
         guard let image else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([image])
     }
+
+    @objc private func saveImage() {
+        guard let image, let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let data = rep.representation(using: .png, properties: [:]) else { return }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "贴图 \(formatter.string(from: Date())).png"
+        panel.level = .modalPanel
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.runModal()
+        }
+    }
+
+    @objc private func zoomIn() { applyZoom(zoom * 1.25) }
+    @objc private func zoomOut() { applyZoom(zoom / 1.25) }
+    @objc private func actualSize() { applyZoom(1) }
+    @objc private func setOpacity(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? CGFloat else { return }
+        window?.alphaValue = value
+    }
     @objc private func closePin() { window?.close() }
+    @objc private func closeAll() { onCloseAll?() }
 }
