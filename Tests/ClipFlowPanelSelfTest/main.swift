@@ -58,6 +58,48 @@ func finishWindowAnimation(_ panel: NSPanel) {
 }
 
 @MainActor
+func testFileRelay(directory: URL) async throws {
+    let relayRoot = directory.appendingPathComponent("RelayActions")
+    let sourceDir = directory.appendingPathComponent("RelaySources")
+    try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+    let names = ["季度报告.pdf", "Design Notes.md", "report-final.PDF"]
+    let sources = try names.map { name -> URL in
+        let url = sourceDir.appendingPathComponent(name)
+        try Data(name.utf8).write(to: url)
+        return url
+    }
+    let relay = FileRelayModel(rootURL: relayRoot)
+    relay.add(urls: sources)
+    let deadline = Date().addingTimeInterval(3)
+    while relay.items.count < names.count && Date() < deadline {
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    try require(relay.items.count == names.count && relay.errorMessage == nil, "文件中转站导入测试文件失败")
+
+    let pdfs = FileRelayModel.filter(relay.items, query: "pdf")
+    try require(Set(pdfs.map(\.originalName)) == ["季度报告.pdf", "report-final.PDF"], "中转搜索未忽略大小写")
+    try require(FileRelayModel.filter(relay.items, query: "  报告   PDF ").map(\.originalName) == ["季度报告.pdf"], "中转搜索多关键词未同时匹配")
+    try require(FileRelayModel.filter(relay.items, query: "   ").count == names.count, "空白搜索不应过滤")
+    try require(FileRelayModel.filter(relay.items, query: "不存在").isEmpty, "中转搜索出现无关结果")
+
+    let item = relay.items.first { $0.originalName == "Design Notes.md" }!
+    let stored = relay.storedURL(for: item)
+    try require(relay.isInsideRelay(stored) && !relay.isInsideRelay(sources[0]), "中转目录判定错误")
+    relay.add(urls: [stored])
+    try require(!relay.isImporting && relay.items.count == names.count && relay.noticeMessage != nil, "拖回中转站自身的文件被重复导入")
+
+    let pasteboard = NSPasteboard(name: NSPasteboard.Name("ClipFlowPanelSelfTest.relay.\(UUID().uuidString)"))
+    defer { pasteboard.releaseGlobally() }
+    try require(relay.copyFile(item, to: pasteboard), "拷贝中转文件失败")
+    let copied = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+    try require(copied?.map { $0.resolvingSymlinksInPath().path } == [stored.resolvingSymlinksInPath().path], "剪贴板中不是中转文件本身")
+    try require(relay.copyPath(item, to: pasteboard) && pasteboard.string(forType: .string) == stored.path, "拷贝中转路径失败")
+
+    try FileManager.default.removeItem(at: stored)
+    try require(!relay.copyFile(item, to: pasteboard) && relay.errorMessage != nil, "副本丢失时仍提示拷贝成功")
+}
+
+@MainActor
 func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDefaults, directory: URL) async throws {
     let screenRect = NSRect(x: 0, y: 0, width: 1440, height: 900)
     let air = TopNotchGeometry.frame(screen: screenRect, visible: NSRect(x: 0, y: 60, width: 1440, height: 815))
@@ -327,7 +369,8 @@ func runTests() async throws {
     try require(MemoLibraryModel(fileURL: memoURL).selectedItem?.body == expectedMemo, "关闭未保存备忘录连续输入的完整文本")
 
     try await testTopNotch(controller: controller, model: appModel, defaults: defaults, directory: directory)
-    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放")
+    try await testFileRelay(directory: directory)
+    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；中转搜索、拷贝文件与路径、防重复拖回；笔记保存与中文输入；窗口缩放")
 }
 
 try await runTests()
