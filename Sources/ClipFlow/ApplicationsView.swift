@@ -1,4 +1,5 @@
 import AppKit
+import ClipFlowKit
 import SwiftUI
 
 struct LocalApplication: Identifiable {
@@ -9,6 +10,7 @@ struct LocalApplication: Identifiable {
     let bundleURL: URL
     let icon: NSImage
     let version: String?
+    let searchKey: ApplicationSearchKey
     var isFavorite: Bool
     var lastLaunchedAt: Date?
     var launchCount: Int
@@ -34,7 +36,13 @@ final class ApplicationsModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var unavailableFavorites: [UnavailableFavoriteApplication] = []
-    @Published var query = ""
+    @Published var query = "" {
+        didSet {
+            if query != oldValue { highlightedID = nil }
+        }
+    }
+    /// Keyboard highlight inside search results; `nil` means the best match.
+    @Published private(set) var highlightedID: String?
 
     private enum Key {
         static let favorites = "applications.favorites"
@@ -63,14 +71,57 @@ final class ApplicationsModel: ObservableObject {
         } ?? [:]
     }
 
+    var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Search results ordered by match quality: exact/prefix name matches first,
+    /// then word starts, initials ("vsc"), pinyin ("weixin" / "wx") and plain
+    /// substring matches. Ties prefer frequently launched apps.
     var filteredApplications: [LocalApplication] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return applications }
-        return applications.filter {
-            $0.displayName.localizedCaseInsensitiveContains(needle)
-                || $0.originalBundleName.localizedCaseInsensitiveContains(needle)
-                || $0.bundleIdentifier.localizedCaseInsensitiveContains(needle)
+        guard isSearching else { return applications }
+        return ApplicationSearch.rank(
+            applications,
+            query: query,
+            key: \.searchKey,
+            areInIncreasingOrder: { $0.launchCount > $1.launchCount }
+        )
+    }
+
+    /// The application ↵ launches while searching.
+    var highlightedApplication: LocalApplication? {
+        guard isSearching else { return nil }
+        let results = filteredApplications
+        if let highlightedID, let match = results.first(where: { $0.id == highlightedID }) {
+            return match
         }
+        return results.first
+    }
+
+    func moveHighlight(by offset: Int) {
+        guard isSearching else { return }
+        let results = filteredApplications
+        guard !results.isEmpty else { return }
+        let current = highlightedApplication.flatMap { item in results.firstIndex { $0.id == item.id } } ?? 0
+        let next = min(max(current + offset, 0), results.count - 1)
+        highlightedID = results[next].id
+    }
+
+    @discardableResult
+    func launchHighlighted() -> Bool {
+        guard let application = highlightedApplication else { return false }
+        launch(application)
+        return true
+    }
+
+    func revealInFinder(_ application: LocalApplication) {
+        NSWorkspace.shared.activateFileViewerSelecting([application.bundleURL])
+    }
+
+    func copyPath(_ application: LocalApplication) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(application.bundleURL.path, forType: .string)
     }
 
     var favoriteApplications: [LocalApplication] {
@@ -114,6 +165,7 @@ final class ApplicationsModel: ObservableObject {
                         bundleURL: record.url,
                         icon: icons[record.id] ?? NSImage(),
                         version: record.version,
+                        searchKey: record.searchKey,
                         isFavorite: self.favoriteIDs.contains(record.id),
                         lastLaunchedAt: lastLaunch,
                         launchCount: self.launchCountByID[record.id] ?? 0
@@ -206,6 +258,7 @@ private struct ApplicationRecord {
     let originalBundleName: String
     let url: URL
     let version: String?
+    let searchKey: ApplicationSearchKey
 }
 
 private enum ApplicationCatalog {
@@ -255,7 +308,12 @@ private enum ApplicationCatalog {
             displayName: displayName,
             originalBundleName: originalBundleName,
             url: url,
-            version: version
+            version: version,
+            // Built here on the scan queue so pinyin transforms never run per keystroke.
+            searchKey: ApplicationSearchKey(
+                names: [displayName, originalBundleName, url.deletingPathExtension().lastPathComponent],
+                identifier: bundleIdentifier
+            )
         )
     }
 }
@@ -281,10 +339,12 @@ struct ApplicationsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(theme.muted)
-                    TextField("搜索应用…", text: $model.query)
+                    TextField("搜索应用，支持拼音和首字母…", text: $model.query)
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
+                        .onSubmit { model.launchHighlighted() }
                         .accessibilityLabel("搜索应用")
+                        .accessibilityHint("输入名称、拼音或首字母，按回车打开第一个结果，上下方向键切换")
                     if !model.query.isEmpty {
                         Button {
                             model.query = ""
@@ -298,7 +358,7 @@ struct ApplicationsView: View {
                     }
                 }
                 .padding(.horizontal, 11)
-                .frame(width: 260, height: 36)
+                .frame(width: 280, height: 36)
                 .background(theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(searchFocused ? theme.foreground.opacity(0.22) : .clear, lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -366,6 +426,11 @@ struct ApplicationsView: View {
                                 .buttonStyle(ApplicationRowButtonStyle())
                                 .accessibilityLabel("启动 \(application.displayName)")
                                 .contextMenu {
+                                    Button("打开") { model.launch(application) }
+                                    Divider()
+                                    Button("在访达中显示") { model.revealInFinder(application) }
+                                    Button("拷贝应用路径") { model.copyPath(application) }
+                                    Divider()
                                     Button("从常用中移除") { model.toggleFavorite(application) }
                                 }
                                 .accessibilityAction(named: Text("从常用中移除")) {
@@ -419,7 +484,15 @@ struct ApplicationsView: View {
                 Text("全部应用")
                     .font(.system(size: 12.5, weight: .semibold))
                 Spacer()
-                Text("\(model.filteredApplications.count) 个应用")
+                if let highlighted = model.highlightedApplication {
+                    Text("↵ 打开“\(highlighted.displayName)”  ↑↓ 切换")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityHidden(true)
+                }
+                Text(model.isSearching ? "\(model.filteredApplications.count) 个结果" : "\(model.filteredApplications.count) 个应用")
                     .font(.system(size: 10.5))
                     .foregroundStyle(theme.muted)
                     .monospacedDigit()
@@ -472,13 +545,25 @@ struct ApplicationsView: View {
                 .foregroundStyle(theme.muted)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView(.vertical) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 9)], spacing: 9) {
-                        ForEach(model.filteredApplications) { application in
-                            ApplicationTile(application: application, model: model)
+                let highlightedID = model.highlightedApplication?.id
+                ScrollViewReader { reader in
+                    ScrollView(.vertical) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 9)], spacing: 9) {
+                            ForEach(model.filteredApplications) { application in
+                                ApplicationTile(
+                                    application: application,
+                                    model: model,
+                                    isHighlighted: application.id == highlightedID
+                                )
+                                .id(application.id)
+                            }
                         }
+                        .padding(.bottom, 12)
                     }
-                    .padding(.bottom, 12)
+                    .onChange(of: highlightedID) { id in
+                        guard let id else { return }
+                        reader.scrollTo(id)
+                    }
                 }
             }
         }
@@ -507,6 +592,7 @@ struct ApplicationsView: View {
 private struct ApplicationTile: View {
     let application: LocalApplication
     @ObservedObject var model: ApplicationsModel
+    var isHighlighted = false
     @Environment(\.colorScheme) private var colorScheme
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -535,18 +621,29 @@ private struct ApplicationTile: View {
             }
             .buttonStyle(ApplicationTileButtonStyle())
             .accessibilityLabel("启动 \(application.displayName)")
+            .accessibilityAddTraits(isHighlighted ? .isSelected : [])
+            .help(application.version.map { "\(application.displayName) \($0)" } ?? application.displayName)
             .contextMenu {
+                Button("打开") { model.launch(application) }
+                Divider()
                 Button(application.isFavorite ? "从常用中移除" : "加入常用") {
                     model.toggleFavorite(application)
                 }
+                Button("在访达中显示") { model.revealInFinder(application) }
+                Button("拷贝应用路径") { model.copyPath(application) }
             }
             .accessibilityAction(named: Text(application.isFavorite ? "从常用中移除" : "加入常用")) {
                 model.toggleFavorite(application)
             }
         }
-        .background(hovering ? theme.chip : Color.clear)
+        .background(hovering || isHighlighted ? theme.chip : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 13)
+                .stroke(isHighlighted ? theme.foreground.opacity(0.28) : .clear, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 13))
         .animation(reduceMotion ? nil : FlowMotion.hover, value: hovering)
+        .animation(reduceMotion ? nil : FlowMotion.hover, value: isHighlighted)
         .onHover { hovering = $0 }
     }
 }

@@ -214,7 +214,43 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    // Application search: ranking, initials, camelCase and pinyin.
+    struct SearchApp { let name: String; let bundle: String; let id: String; let launches: Int }
+    let searchApps = [
+        SearchApp(name: "Calculator", bundle: "Calculator", id: "com.apple.calculator", launches: 0),
+        SearchApp(name: "Visual Studio Code", bundle: "Code", id: "com.microsoft.VSCode", launches: 0),
+        SearchApp(name: "iTerm", bundle: "iTerm2", id: "com.googlecode.iterm2", launches: 0),
+        SearchApp(name: "微信", bundle: "WeChat", id: "com.tencent.xinWeChat", launches: 0),
+        SearchApp(name: "网易云音乐", bundle: "NeteaseMusic", id: "com.netease.163music", launches: 2),
+        SearchApp(name: "QQ音乐", bundle: "QQMusic", id: "com.tencent.QQMusicMac", launches: 9),
+        SearchApp(name: "Notes", bundle: "Notes", id: "com.apple.Notes", launches: 0),
+        SearchApp(name: "OmniFocus", bundle: "OmniFocus", id: "com.omnigroup.OmniFocus3", launches: 0)
+    ]
+    let searchKeys = Dictionary(uniqueKeysWithValues: searchApps.map {
+        ($0.id, ApplicationSearchKey(names: [$0.name, $0.bundle], identifier: $0.id))
+    })
+    func searchNames(_ query: String) -> [String] {
+        ApplicationSearch.rank(
+            searchApps,
+            query: query,
+            key: { searchKeys[$0.id]! },
+            areInIncreasingOrder: { $0.launches > $1.launches }
+        ).map(\.name)
+    }
+    try require(searchNames("").count == searchApps.count, "空搜索不应过滤应用")
+    try require(searchNames("vsc").first == "Visual Studio Code", "应用搜索不支持首字母缩写")
+    try require(searchNames("code").first == "Visual Studio Code", "应用搜索没有匹配 Bundle 名称")
+    try require(searchNames("wx").first == "微信", "应用搜索不支持拼音首字母")
+    try require(searchNames("weixin").first == "微信", "应用搜索不支持全拼")
+    try require(searchNames("wyy").first == "网易云音乐", "应用搜索拼音首字母排序错误")
+    try require(searchNames("yin") == ["QQ音乐", "网易云音乐"], "同分应用没有按启动次数排序")
+    try require(searchNames("yun yin").first == "网易云音乐", "多词拼音搜索失败")
+    try require(searchNames("focus").first == "OmniFocus", "应用搜索不支持驼峰分词")
+    try require(searchNames("no").first == "Notes", "前缀匹配应排在包含匹配之前")
+    try require(searchNames("ＣＡＬＣ").first == "Calculator", "全角/大小写没有归一化")
+    try require(searchNames("zzzz").isEmpty, "无关搜索不应返回应用")
+
+    print("Jaimo Flow self-test passed: 41 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)
