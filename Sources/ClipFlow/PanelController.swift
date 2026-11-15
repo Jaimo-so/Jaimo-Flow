@@ -631,6 +631,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                 model.promptQuery = ""
             } else if shellModel.destination == .vibehub, !shellModel.vibeHubLibrary.query.isEmpty {
                 shellModel.vibeHubLibrary.query = ""
+            } else if shellModel.destination == .applications, !applicationsModel.query.isEmpty {
+                applicationsModel.query = ""
             } else {
                 hide()
             }
@@ -640,6 +642,19 @@ final class PanelController: NSObject, NSWindowDelegate {
         if shellModel.destination == .vibehub, command && key == "s" {
             shellModel.vibeHubLibrary.flush()
             return true
+        }
+
+        if shellModel.destination == .applications, applicationsModel.isSearching, !isComposingText {
+            switch keyCode {
+            case UInt16(kVK_UpArrow):
+                applicationsModel.moveHighlight(by: -1)
+                return true
+            case UInt16(kVK_DownArrow):
+                applicationsModel.moveHighlight(by: 1)
+                return true
+            default:
+                break
+            }
         }
 
         guard shellModel.destination == .prompts || shellModel.destination == .clipboard else {
@@ -689,6 +704,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         default:
             return false
         }
+    }
+
+    /// True while an input method (e.g. pinyin) has uncommitted marked text,
+    /// so arrow keys keep selecting IME candidates instead of moving results.
+    private var isComposingText: Bool {
+        guard let textView = panel.firstResponder as? NSTextView else { return false }
+        return textView.hasMarkedText()
     }
 
     private func destinationForShortcut(_ key: String) -> ToolDestination? {

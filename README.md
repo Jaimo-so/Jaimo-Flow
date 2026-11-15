@@ -87,7 +87,7 @@ shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
 - 备忘录支持多条内容、标题、正文、置顶和删除，不与快速便签或剪切板历史混存；备忘录和快速便签编辑期间只保留内存修改，关闭编辑界面、离开首页、隐藏窗口或正常退出时统一保存，备忘录列表内切换记录不会提前保存；保存失败保留编辑内容并支持重试
 - 录音支持开始、暂停、继续、完成、实时音量反馈和在访达中定位；M4A 文件只保存在本机 Application Support 目录
 - 镜子支持 16:9 横图和手机竖图，组件宽高比跟随照片；正常状态只显示照片或水平镜像的本机实时画面，点击即可切换，照片管理位于右键菜单
-- 应用页扫描 `/Applications`、`/System/Applications` 和 `~/Applications`，支持搜索、收藏、启动和最近使用记录
+- 应用页扫描 `/Applications`、`/System/Applications` 和 `~/Applications`，支持搜索、收藏、启动和最近使用记录；搜索支持拼音全拼/首字母（`weixin`、`wx` → 微信）、英文首字母缩写（`vsc` → Visual Studio Code）和驼峰分词，结果按匹配度排序，`↑`/`↓` 切换、`↵` 打开、`Escape` 清空，右键可在访达中显示或拷贝应用路径
 - 每 0.4 秒读取 `NSPasteboard.changeCount`，自动记录文字、代码、HTTP(S) 链接和图片
 - 支持直接复制的 PNG/JPEG 像素数据，也支持从 Finder、飞书等应用复制 JPG/JPEG、PNG 等本地图片文件；文件引用会读取真实图片内容，不会误存为文件图标
 - 设置页支持检查更新；发现 GitHub Release 新版本后，可一键下载、校验、安装并自动重新启动
