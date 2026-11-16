@@ -82,9 +82,22 @@ private struct PromptListView: View {
                                             model.selectedPromptID = prompt.id
                                             model.useSelectedPrompt()
                                         }
+                                        Button("复制原始模板") {
+                                            model.selectedPromptID = prompt.id
+                                            model.copySelectedPromptTemplate()
+                                        }
+                                        Divider()
                                         Button("编辑") {
                                             model.selectedPromptID = prompt.id
                                             model.beginEditSelectedPrompt()
+                                        }
+                                        Button("创建副本") {
+                                            model.selectedPromptID = prompt.id
+                                            model.duplicateSelectedPrompt()
+                                        }
+                                        Button(prompt.isFavorite ? "取消收藏" : "收藏") {
+                                            model.selectedPromptID = prompt.id
+                                            model.toggleFavorite()
                                         }
                                         Divider()
                                         Button("删除", role: .destructive) {
@@ -339,6 +352,15 @@ private struct PromptPreviewView: View {
             .disabled(model.selectedPrompt == nil)
             .accessibilityLabel("编辑提示词")
             .help("编辑（⌘E）")
+
+            Button(action: model.duplicateSelectedPrompt) {
+                Image(systemName: "plus.square.on.square").accessibilityHidden(true)
+            }
+            .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+            .frame(width: 26, height: 26)
+            .disabled(model.selectedPrompt == nil)
+            .accessibilityLabel("创建副本")
+            .help("创建副本（⌘D）")
 
             Button(action: model.toggleFavorite) {
                 Image(systemName: model.selectedPrompt?.isFavorite == true ? "star.fill" : "star")
@@ -691,12 +713,37 @@ struct PromptRunnerView: View {
                 Divider().overlay(theme.hairline)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 13) {
+                        if model.promptRunnerRestoredValues || model.promptVariablesDifferFromDefaults {
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(theme.muted)
+                                    .accessibilityHidden(true)
+                                Text(model.promptRunnerRestoredValues ? "已带入上次填写的内容" : "已修改默认值")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(theme.muted)
+                                Spacer()
+                                Button("恢复默认值") { model.resetPromptVariablesToDefaults() }
+                                    .buttonStyle(GlassButtonStyle(kind: .normal))
+                                    .fixedSize()
+                                    .help("清空上次填写的记录，使用模板中设置的默认值")
+                            }
+                        }
+
+                        let missing = Set(model.missingRequiredPromptVariables)
                         ForEach(model.runnerPrompt?.variables ?? [], id: \.name) { variable in
                             labeledField(variable.name + (variable.isRequired ? " *" : ""), theme: theme) {
-                                TextField("输入\(variable.name)", text: valueBinding(variable.name), axis: .vertical)
-                                    .textFieldStyle(.plain)
-                                    .lineLimit(2...5)
-                                    .promptField(theme)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    TextField("输入\(variable.name)", text: valueBinding(variable.name), axis: .vertical)
+                                        .textFieldStyle(.plain)
+                                        .lineLimit(2...5)
+                                        .promptField(theme)
+                                    if missing.contains(variable.name) {
+                                        Text("必填，尚未填写")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(theme.danger)
+                                    }
+                                }
                             }
                         }
 
@@ -719,6 +766,11 @@ struct PromptRunnerView: View {
                 }
                 Divider().overlay(theme.hairline)
                 HStack(spacing: 8) {
+                    if !model.missingRequiredPromptVariables.isEmpty {
+                        Text("还有 \(model.missingRequiredPromptVariables.count) 个必填变量")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(theme.muted)
+                    }
                     Spacer()
                     Button("取消") { model.promptRunnerOpen = false }
                         .buttonStyle(GlassButtonStyle(kind: .normal))

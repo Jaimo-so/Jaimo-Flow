@@ -200,6 +200,21 @@ final class AppModel: ObservableObject {
         return prompts.first { $0.id == selectedPromptID }
     }
 
+    /// 变量面板中尚未填写的必填变量。
+    var missingRequiredPromptVariables: [String] {
+        guard let prompt = runnerPrompt else { return [] }
+        return PromptVariableMemory.missingRequired(promptVariableValues, variables: prompt.variables)
+    }
+
+    /// 当前填写是否与默认值不同，用于显示“恢复默认值”。
+    var promptVariablesDifferFromDefaults: Bool {
+        guard let prompt = runnerPrompt else { return false }
+        return PromptVariableMemory.differsFromDefaults(promptVariableValues, variables: prompt.variables)
+    }
+
+    /// 打开变量面板时是否带入了上次填写的内容。
+    @Published private(set) var promptRunnerRestoredValues = false
+
     var hasMissingRequiredPromptVariables: Bool {
         guard let prompt = runnerPrompt else { return true }
         return prompt.variables.contains { variable in
@@ -487,9 +502,14 @@ final class AppModel: ObservableObject {
         if prompt.variables.isEmpty {
             copyPrompt(prompt, values: [:])
         } else {
-            promptVariableValues = Dictionary(
-                uniqueKeysWithValues: prompt.variables.map { ($0.name, $0.defaultValue) }
+            let remembered = preferences.rememberedPromptValues(for: prompt.id)
+            promptVariableValues = PromptVariableMemory.initialValues(
+                for: prompt.variables,
+                remembered: remembered
             )
+            promptRunnerRestoredValues = !PromptVariableMemory
+                .valuesToRemember(remembered, variables: prompt.variables)
+                .isEmpty
             promptRunnerOpen = true
         }
     }
@@ -499,8 +519,66 @@ final class AppModel: ObservableObject {
             showToast("请填写所有必填变量")
             return
         }
+        preferences.rememberPromptValues(
+            PromptVariableMemory.valuesToRemember(promptVariableValues, variables: prompt.variables),
+            for: prompt.id
+        )
         copyPrompt(prompt, values: promptVariableValues)
         promptRunnerOpen = false
+    }
+
+    /// 将变量面板恢复为默认值，并忘记这条提示词上次填写的内容。
+    func resetPromptVariablesToDefaults() {
+        guard let prompt = runnerPrompt else { return }
+        promptVariableValues = PromptVariableMemory.initialValues(for: prompt.variables, remembered: [:])
+        promptRunnerRestoredValues = false
+        preferences.forgetPromptValues(for: prompt.id)
+        showToast("已恢复默认值")
+    }
+
+    /// 直接复制未替换变量的原始模板，便于分享或粘贴到其他工具中再加工。
+    func copySelectedPromptTemplate() {
+        guard let prompt = selectedPrompt, let clipboardMonitor else { return }
+        switch clipboardMonitor.write(text: prompt.body) {
+        case .text(let count):
+            finishCopy(message: "已复制原始模板 · \(count) 个字符")
+        case .image:
+            break
+        case .failure:
+            showToast("复制失败，请检查剪贴板权限")
+        }
+    }
+
+    /// 以选中的提示词为模板创建副本，放在原提示词之后并直接选中。
+    func duplicateSelectedPrompt() {
+        guard let prompt = selectedPrompt, let store else { return }
+        let title = PromptVariableMemory.duplicateTitle(
+            for: prompt.title,
+            existingTitles: prompts.map(\.title)
+        )
+        do {
+            let copy = try store.createPrompt(
+                title: title,
+                body: prompt.body,
+                groupName: prompt.groupName,
+                variables: prompt.variables
+            )
+            var order = try store.loadPrompts().map(\.id).filter { $0 != copy.id }
+            let insertAt = (order.firstIndex(of: prompt.id).map { $0 + 1 }) ?? order.count
+            order.insert(copy.id, at: insertAt)
+            try store.setPromptOrder(order)
+            prompts = try store.loadPrompts()
+            filteredPromptsCache = nil
+            if !filteredPrompts.contains(where: { $0.id == copy.id }) {
+                promptScope = .all
+                filteredPromptsCache = nil
+            }
+            selectedPromptID = copy.id
+            showToast("已创建副本「\(shortTitle(title))」")
+        } catch {
+            prompts = (try? store.loadPrompts()) ?? prompts
+            showToast("创建副本失败")
+        }
     }
 
     func confirmDeletePrompt() {
@@ -508,6 +586,7 @@ final class AppModel: ObservableObject {
         let current = filteredPrompts.firstIndex { $0.id == prompt.id } ?? 0
         do {
             try store.deletePrompt(id: prompt.id)
+            preferences.forgetPromptValues(for: prompt.id)
             prompts = try store.loadPrompts()
             let visible = filteredPrompts
             selectedPromptID = visible.isEmpty ? nil : visible[min(current, visible.count - 1)].id

@@ -623,6 +623,10 @@ final class PanelController: NSObject, NSWindowDelegate {
             model.beginEditSelectedPrompt()
             return true
         }
+        if command && key == "d", shellModel.destination == .prompts {
+            if case .ready = model.phase { model.duplicateSelectedPrompt() }
+            return true
+        }
 
         if keyCode == UInt16(kVK_Escape) {
             if shellModel.destination == .clipboard, !model.query.isEmpty {

@@ -23,6 +23,7 @@ final class PreferencesStore: ObservableObject {
         static let promptGroupOrder = "promptGroupOrder"
         static let workspaceSize = "island.workspaceSize"
         static let appearance = "appearance"
+        static let promptVariableMemory = "promptVariableMemory"
     }
 
     static let defaultExcludedApps = [
@@ -106,6 +107,26 @@ final class PreferencesStore: ObservableObject {
 
     func setPromptGroupOrder(_ groups: [String]) {
         promptGroupOrder = groups
+    }
+
+    /// 某条提示词上次复制时填写的变量值，仅保存在本机偏好设置中。
+    func rememberedPromptValues(for promptID: Int64) -> [String: String] {
+        let all = defaults.dictionary(forKey: Key.promptVariableMemory) ?? [:]
+        return all[String(promptID)] as? [String: String] ?? [:]
+    }
+
+    func rememberPromptValues(_ values: [String: String], for promptID: Int64) {
+        var all = defaults.dictionary(forKey: Key.promptVariableMemory) ?? [:]
+        if values.isEmpty {
+            all.removeValue(forKey: String(promptID))
+        } else {
+            all[String(promptID)] = values
+        }
+        defaults.set(all, forKey: Key.promptVariableMemory)
+    }
+
+    func forgetPromptValues(for promptID: Int64) {
+        rememberPromptValues([:], for: promptID)
     }
 
     func isExcluded(bundleID: String) -> Bool {
