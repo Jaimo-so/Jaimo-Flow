@@ -214,7 +214,50 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    let memoryVariables = [
+        PromptVariable(name: "语气", defaultValue: "友好"),
+        PromptVariable(name: "受众", defaultValue: ""),
+        PromptVariable(name: "补充", defaultValue: "", isRequired: false)
+    ]
+    try require(
+        PromptVariableMemory.initialValues(
+            for: memoryVariables,
+            remembered: ["语气": "正式", "受众": "  ", "已删除变量": "旧值"]
+        ) == ["语气": "正式", "受众": "", "补充": ""],
+        "提示词变量没有优先带入上次填写的非空值"
+    )
+    try require(
+        PromptVariableMemory.valuesToRemember(
+            ["语气": "友好", "受众": "新同事", "补充": " ", "已删除变量": "x"],
+            variables: memoryVariables
+        ) == ["受众": "新同事"],
+        "提示词变量记忆不应保存默认值、空白值或已删除的变量"
+    )
+    try require(
+        PromptVariableMemory.valuesToRemember(
+            ["受众": String(repeating: "长", count: PromptVariableMemory.maxRememberedLength + 1)],
+            variables: memoryVariables
+        ).isEmpty,
+        "超长变量值不应写入偏好设置"
+    )
+    try require(
+        PromptVariableMemory.missingRequired(["语气": "友好", "受众": " \n"], variables: memoryVariables) == ["受众"],
+        "必填变量缺失检测错误"
+    )
+    try require(
+        PromptVariableMemory.differsFromDefaults(["语气": "友好", "受众": "", "补充": ""], variables: memoryVariables) == false
+            && PromptVariableMemory.differsFromDefaults(["语气": "正式"], variables: memoryVariables),
+        "变量是否偏离默认值判断错误"
+    )
+    try require(
+        PromptVariableMemory.duplicateTitle(for: "周报", existingTitles: ["周报"]) == "周报 副本"
+            && PromptVariableMemory.duplicateTitle(for: "周报", existingTitles: ["周报", "周报 副本"]) == "周报 副本 2"
+            && PromptVariableMemory.duplicateTitle(for: "周报 副本 2", existingTitles: ["周报", "周报 副本", "周报 副本 2"]) == "周报 副本 3"
+            && PromptVariableMemory.duplicateTitle(for: "  ", existingTitles: []) == "未命名提示词 副本",
+        "提示词副本标题生成错误"
+    )
+
+    print("Jaimo Flow self-test passed: 35 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)

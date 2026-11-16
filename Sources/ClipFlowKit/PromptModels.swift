@@ -95,3 +95,75 @@ public enum PromptTemplate {
         return result
     }
 }
+
+/// 提示词变量的“上次填写”记忆与副本命名等与平台无关的逻辑。
+public enum PromptVariableMemory {
+    /// 每个变量记住的最大字符数，避免把超长粘贴内容写入偏好设置。
+    public static let maxRememberedLength = 4_000
+
+    /// 打开变量面板时的初始值：优先使用上次填写的非空值，否则使用默认值。
+    public static func initialValues(
+        for variables: [PromptVariable],
+        remembered: [String: String]
+    ) -> [String: String] {
+        Dictionary(
+            variables.map { variable -> (String, String) in
+                let last = remembered[variable.name] ?? ""
+                let usable = !last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                return (variable.name, usable ? last : variable.defaultValue)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// 只保留当前模板中仍存在、与默认值不同且非空的变量值。
+    public static func valuesToRemember(
+        _ values: [String: String],
+        variables: [PromptVariable]
+    ) -> [String: String] {
+        var result: [String: String] = [:]
+        for variable in variables {
+            guard let value = values[variable.name],
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  value != variable.defaultValue,
+                  value.count <= maxRememberedLength else { continue }
+            result[variable.name] = value
+        }
+        return result
+    }
+
+    /// 当前填写是否与默认值不同（用于显示“恢复默认值”）。
+    public static func differsFromDefaults(
+        _ values: [String: String],
+        variables: [PromptVariable]
+    ) -> Bool {
+        variables.contains { (values[$0.name] ?? "") != $0.defaultValue }
+    }
+
+    /// 尚未填写的必填变量名，按模板中出现的顺序返回。
+    public static func missingRequired(
+        _ values: [String: String],
+        variables: [PromptVariable]
+    ) -> [String] {
+        variables.filter { variable in
+            variable.isRequired
+                && (values[variable.name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.map(\.name)
+    }
+
+    /// 生成不与现有标题重复的副本标题：「标题 副本」「标题 副本 2」……
+    public static func duplicateTitle(for title: String, existingTitles: [String]) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var base = trimmed.isEmpty ? "未命名提示词" : trimmed
+        // 对副本再建副本时沿用同一个基础标题，避免出现「副本 副本」。
+        if let range = base.range(of: #" 副本( \d+)?$"#, options: .regularExpression) {
+            base = String(base[..<range.lowerBound])
+        }
+        let taken = Set(existingTitles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        let first = "\(base) 副本"
+        if !taken.contains(first) { return first }
+        var index = 2
+        while taken.contains("\(base) 副本 \(index)") { index += 1 }
+        return "\(base) 副本 \(index)"
+    }
+}
