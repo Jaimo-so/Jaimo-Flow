@@ -373,6 +373,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 选中文本记录可用的“转换后复制”操作；图片、加载中或密钥分组时为空。
+    var selectedTextTransforms: [ClipTextTransform] {
+        guard !isCredentialGroup, libraryMode != .prompts, case .ready = phase,
+              let item = selectedItem, item.kind != .image else { return [] }
+        return ClipTextTransform.available(for: item.fullText ?? item.title)
+    }
+
+    /// 把选中记录按指定方式转换后写入剪贴板，历史中的原文保持不变。
+    func copySelected(transform: ClipTextTransform) {
+        guard case .ready = phase, let item = selectedItem, item.kind != .image,
+              let clipboardMonitor else { return }
+        guard let output = transform.apply(to: item.fullText ?? item.title) else {
+            showToast("这条内容无需「\(transform.title)」")
+            return
+        }
+        switch clipboardMonitor.write(text: output) {
+        case .text(let count): finishCopy(message: "已复制「\(transform.title)」结果 · \(count) 个字符")
+        case .image, .failure: showToast("复制失败，请检查剪贴板权限")
+        }
+    }
+
     func toggleFavorite() {
         if isCredentialGroup { return }
         if libraryMode == .prompts {
