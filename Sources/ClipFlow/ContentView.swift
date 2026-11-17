@@ -404,6 +404,7 @@ private struct HistoryListView: View {
                                         model.focusArea = .other
                                     }
                                     .id(item.id)
+                                    .contextMenu { rowMenu(for: item) }
                                 }
                             }
                             .padding(.horizontal, 7)
@@ -422,6 +423,31 @@ private struct HistoryListView: View {
         .focusable(false)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("剪贴板历史记录")
+    }
+
+    @ViewBuilder
+    private func rowMenu(for item: ClipItem) -> some View {
+        Button("复制到剪贴板") {
+            model.selectedID = item.id
+            model.copySelected()
+        }
+        Button(item.isFavorite ? "取消收藏" : "收藏") {
+            model.selectedID = item.id
+            model.toggleFavorite()
+        }
+        if item.kind != .image {
+            let transforms = ClipTextTransform.available(for: item.fullText ?? item.title)
+            if !transforms.isEmpty {
+                Menu("转换后复制") {
+                    ForEach(transforms) { transform in
+                        Button(transform.title) {
+                            model.selectedID = item.id
+                            model.copySelected(transform: transform)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -621,6 +647,33 @@ private struct PreviewView: View {
             .frame(maxWidth: .infinity)
             .keyboardShortcut(.return, modifiers: [])
             .disabled(model.selectedItem == nil)
+
+            let transforms = model.selectedTextTransforms
+            Menu {
+                ForEach(transforms) { transform in
+                    Button {
+                        model.copySelected(transform: transform)
+                    } label: {
+                        Label(transform.title, systemImage: transform.symbolName)
+                    }
+                }
+            } label: {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(transforms.isEmpty ? theme.muted : theme.foregroundSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(theme.chip)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.hairline, lineWidth: 0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .accessibilityHidden(true)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .frame(width: 26, height: 26)
+            .disabled(transforms.isEmpty)
+            .accessibilityLabel("转换后复制")
+            .help(transforms.isEmpty ? "这条内容没有可用的转换" : "转换后复制：合并为一行、格式化 JSON、URL 解码等，原记录不变")
 
             Button(action: model.toggleFavorite) {
                 Image(systemName: model.selectedItem?.isFavorite == true ? "star.fill" : "star")
