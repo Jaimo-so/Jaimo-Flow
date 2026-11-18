@@ -1,4 +1,5 @@
 import AppKit
+import ClipFlowKit
 import CoreGraphics
 import UniformTypeIdentifiers
 
@@ -79,11 +80,35 @@ private final class CapturePanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
-private enum DrawTool { case select, rectangle, arrow, pen, highlight, mosaic, text, eraser }
 private struct Mark {
-    var tool: DrawTool
+    var tool: CaptureDrawTool
     var points: [CGPoint]
     var text: String = ""
+    var colorIndex: Int = 0
+    var strokeWidth: CaptureStrokeWidth = .regular
+
+    var logicMark: CaptureAnnotationMark {
+        CaptureAnnotationMark(
+            tool: tool,
+            points: points.map { ($0.x, $0.y) },
+            text: text,
+            colorIndex: colorIndex,
+            strokeWidth: strokeWidth
+        )
+    }
+
+    var strokeColor: NSColor {
+        let color = CaptureAnnotationColor.color(at: colorIndex)
+        let base = NSColor(calibratedRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        return tool == .highlight ? base.withAlphaComponent(0.5) : base
+    }
+
+    var lineWidth: CGFloat { CGFloat(strokeWidth.resolvedWidth(for: tool)) }
+}
+
+private final class CaptureTextField: NSTextField {
+    var onCancel: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
 }
 
 private final class CaptureView: NSView, NSTextFieldDelegate {
@@ -98,14 +123,20 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
     private var pointer: CGPoint = .zero
     private var dragging = false
     private var adjustment: Int? // -1 move, 0...7 resize
-    private var tool: DrawTool = .select
+    private var tool: CaptureDrawTool = .select
+    private var colorIndex = 0
+    private var strokeWidth: CaptureStrokeWidth = .regular
     private var marks: [Mark] = []
     private var redoMarks: [Mark] = []
     private var draft: Mark?
-    private var buttons: [NSButton] = []
-    private var editor: NSTextField?
+    private var toolButtons: [NSButton] = []
+    private var actionButtons: [NSButton] = []
+    private var colorButtons: [NSButton] = []
+    private var widthButtons: [NSButton] = []
+    private var editor: CaptureTextField?
     private var editorPoint: CGPoint = .zero
     private var hexColor = false
+    private var shiftIsDown = false
     private var tracking: NSTrackingArea?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -166,8 +197,16 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
         let p = clamp(convert(event.locationInWindow, from: nil)); pointer = p; origin = p; dragging = true
         if !selection.isEmpty, tool != .select, selection.contains(p) {
             if tool == .text { beginText(at: p); dragging = false; return }
-            if tool == .eraser { if !marks.isEmpty { redoMarks.append(marks.removeLast()) }; dragging = false; needsDisplay = true; return }
-            draft = Mark(tool: tool, points: [p]); return
+            if tool == .eraser {
+                if let index = CaptureHitTesting.topMarkIndex(at: (p.x, p.y), in: marks.map(\.logicMark)) {
+                    redoMarks.append(marks.remove(at: index))
+                    needsDisplay = true
+                }
+                dragging = false
+                return
+            }
+            draft = Mark(tool: tool, points: [p], colorIndex: colorIndex, strokeWidth: strokeWidth)
+            return
         }
         if !selection.isEmpty, let index = handles().firstIndex(where: { hypot($0.x-p.x,$0.y-p.y) < 10 }) {
             adjustment = index; originalSelection = selection
@@ -207,72 +246,202 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
     }
     private func rect(_ a: CGPoint, _ b: CGPoint) -> CGRect { CGRect(x:min(a.x,b.x),y:min(a.y,b.y),width:abs(a.x-b.x),height:abs(a.y-b.y)) }
     override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 53: onFinish?(nil,false)
-        case 36, 76: complete(pin: false)
-        case 8: copyColor()
-        case 56, 60: hexColor.toggle(); needsDisplay = true
-        default: super.keyDown(with: event)
+        let context: CaptureEscapeContext = editor != nil ? .textEditorOpen : (tool == .select ? .idle : .toolActive)
+        guard let command = CaptureHotkeys.command(
+            keyCode: event.keyCode,
+            command: event.modifierFlags.contains(.command),
+            shift: event.modifierFlags.contains(.shift),
+            option: event.modifierFlags.contains(.option),
+            control: event.modifierFlags.contains(.control),
+            escapeContext: context
+        ) else {
+            super.keyDown(with: event)
+            return
+        }
+        apply(command)
+    }
+    override func flagsChanged(with event: NSEvent) {
+        let down = event.modifierFlags.contains(.shift)
+        if down && !shiftIsDown {
+            hexColor.toggle()
+            needsDisplay = true
+        }
+        shiftIsDown = down
+    }
+    private func apply(_ command: CaptureKeyCommand) {
+        switch command {
+        case .cancelCapture:
+            onFinish?(nil, false)
+        case .dismissTextEditor:
+            dismissTextEditor(save: false)
+        case .backToSelect:
+            tool = .select
+            updateToolbar()
+            needsDisplay = true
+        case .copyScreenshot:
+            complete(pin: false)
+        case .copyPickedColor:
+            copyColor()
+        case .undo:
+            undoMark()
+        case .redo:
+            redoMark()
+        case .save:
+            saveAction()
+        case .pin:
+            pinAction()
+        case .setTool(let next):
+            tool = CaptureDrawTool.toggling(next, current: tool)
+            updateToolbar()
+            needsDisplay = true
+        case .setColor(let index):
+            colorIndex = CaptureAnnotationColor.clampedIndex(index)
+            updateToolbar()
+            needsDisplay = true
+        case .stepStroke(let direction):
+            strokeWidth = strokeWidth.stepped(direction)
+            updateToolbar()
+            needsDisplay = true
         }
     }
-    override func flagsChanged(with event: NSEvent) { if event.modifierFlags.contains(.shift) { hexColor.toggle(); needsDisplay = true } }
     private func beginText(at p: CGPoint) {
-        let field = NSTextField(frame: CGRect(x:p.x,y:p.y,width:180,height:26))
-        field.font = .systemFont(ofSize: 18, weight: .semibold); field.textColor = .systemRed
-        field.placeholderString = "输入文字，回车确认"; field.delegate = self
+        let field = CaptureTextField(frame: CGRect(x:p.x,y:p.y,width:180,height:26))
+        field.font = .systemFont(ofSize: 18, weight: .semibold)
+        field.textColor = strokeColor(for: colorIndex, tool: .text)
+        field.placeholderString = "输入文字，回车确认"
+        field.delegate = self
+        field.onCancel = { [weak self] in self?.dismissTextEditor(save: false) }
         addSubview(field); editor = field; editorPoint = p; window?.makeFirstResponder(field)
     }
     func controlTextDidEndEditing(_ obj: Notification) {
+        dismissTextEditor(save: true)
+    }
+    private func dismissTextEditor(save: Bool) {
         guard let editor else { return }
-        if !editor.stringValue.isEmpty { marks.append(Mark(tool: .text, points: [editorPoint], text: editor.stringValue)); redoMarks.removeAll() }
-        editor.removeFromSuperview(); self.editor = nil; needsDisplay = true
+        if save, !editor.stringValue.isEmpty {
+            marks.append(Mark(tool: .text, points: [editorPoint], text: editor.stringValue, colorIndex: colorIndex, strokeWidth: strokeWidth))
+            redoMarks.removeAll()
+        }
+        editor.onCancel = nil
+        editor.delegate = nil
+        editor.removeFromSuperview()
+        self.editor = nil
+        window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+    private func strokeColor(for index: Int, tool: CaptureDrawTool) -> NSColor {
+        let color = CaptureAnnotationColor.color(at: index)
+        let base = NSColor(calibratedRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        return tool == .highlight ? base.withAlphaComponent(0.5) : base
     }
     private func setupToolbar() {
-        let items: [(String, String, Selector)] = [
-            ("rectangle.on.rectangle", "矩形", #selector(rectangleTool)),
-            ("arrow.up.right", "箭头", #selector(arrowTool)),
-            ("pencil", "画笔", #selector(penTool)),
-            ("highlighter", "荧光笔", #selector(highlightTool)),
-            ("square.grid.3x3.fill", "马赛克", #selector(mosaicTool)),
-            ("textformat", "文字", #selector(textTool)),
-            ("eraser", "撤销上一笔", #selector(eraseTool)),
-            ("arrow.uturn.backward", "撤销", #selector(undoMark)),
-            ("arrow.uturn.forward", "重做", #selector(redoMark)),
-            ("xmark", "取消", #selector(cancelAction)),
-            ("pin.fill", "贴图", #selector(pinAction)),
-            ("square.and.arrow.down", "另存为 PNG", #selector(saveAction)),
-            ("checkmark", "复制截图", #selector(copyAction))
+        let tools: [(String, CaptureDrawTool)] = [
+            ("rectangle.on.rectangle", .rectangle),
+            ("arrow.up.right", .arrow),
+            ("pencil", .pen),
+            ("highlighter", .highlight),
+            ("square.grid.3x3.fill", .mosaic),
+            ("textformat", .text),
+            ("eraser", .eraser)
         ]
-        for (symbol, title, action) in items {
+        for (symbol, item) in tools {
+            toolButtons.append(makeIconButton(symbol: symbol, title: "\(item.title)（\(item.shortcutLabel)）", action: #selector(selectTool(_:)), tag: tools.firstIndex(where: { $0.1 == item }) ?? 0))
+        }
+        let actions: [(String, String, Selector)] = [
+            ("arrow.uturn.backward", "撤销（⌘Z）", #selector(undoMark)),
+            ("arrow.uturn.forward", "重做（⇧⌘Z）", #selector(redoMark)),
+            ("xmark", "取消（Esc）", #selector(cancelAction)),
+            ("pin.fill", "贴图（⌘P）", #selector(pinAction)),
+            ("square.and.arrow.down", "另存为 PNG（⌘S）", #selector(saveAction)),
+            ("checkmark", "复制截图（⏎）", #selector(copyAction))
+        ]
+        for (symbol, title, action) in actions {
+            actionButtons.append(makeIconButton(symbol: symbol, title: title, action: action, tag: 0))
+        }
+        for (index, color) in CaptureAnnotationColor.palette.enumerated() {
             let button = NSButton(frame: .zero)
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-            button.imagePosition = .imageOnly; button.bezelStyle = .regularSquare
-            button.isBordered = false; button.target = self; button.action = action
-            button.toolTip = title; button.setAccessibilityLabel(title)
-            button.wantsLayer = true; button.layer?.cornerRadius = 5
-            button.contentTintColor = NSColor(calibratedWhite: 0.2, alpha: 1)
-            addSubview(button); buttons.append(button)
+            button.isBordered = false
+            button.bezelStyle = .regularSquare
+            button.title = ""
+            button.imagePosition = .noImage
+            button.tag = index
+            button.target = self
+            button.action = #selector(selectColor(_:))
+            button.toolTip = "\(color.name)（\(index + 1)）"
+            button.setAccessibilityLabel(button.toolTip)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 8
+            button.layer?.backgroundColor = NSColor(calibratedRed: color.red, green: color.green, blue: color.blue, alpha: 1).cgColor
+            button.layer?.borderColor = NSColor.black.withAlphaComponent(0.35).cgColor
+            button.layer?.borderWidth = 0.6
+            addSubview(button)
+            colorButtons.append(button)
+        }
+        for (index, width) in CaptureStrokeWidth.allCases.enumerated() {
+            widthButtons.append(makeIconButton(symbol: "lineweight", title: "线宽：\(width.title)（[ / ]）", action: #selector(selectWidth(_:)), tag: index))
+            widthButtons[index].title = width.title
+            widthButtons[index].imagePosition = .noImage
+            widthButtons[index].font = .systemFont(ofSize: 11, weight: .medium)
         }
         updateToolbar()
     }
+    private func makeIconButton(symbol: String, title: String, action: Selector, tag: Int) -> NSButton {
+        let button = NSButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        button.imagePosition = .imageOnly
+        button.bezelStyle = .regularSquare
+        button.isBordered = false
+        button.target = self
+        button.action = action
+        button.tag = tag
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 5
+        button.contentTintColor = NSColor(calibratedWhite: 0.2, alpha: 1)
+        addSubview(button)
+        return button
+    }
+    private var toolbarTools: [CaptureDrawTool] { [.rectangle, .arrow, .pen, .highlight, .mosaic, .text, .eraser] }
     private func toolbarFrame() -> CGRect {
-        let width: CGFloat = CGFloat(buttons.count) * 34 + 12
-        let y = selection.maxY + 9 + 38 <= bounds.height ? selection.maxY + 9 : max(0, selection.minY - 47)
-        return CGRect(x: min(max(4, selection.maxX - width), max(4,bounds.width-width-4)), y:y, width:width, height:38)
+        let topWidth = CGFloat(toolButtons.count + actionButtons.count) * 34 + 12
+        let bottomWidth = CGFloat(colorButtons.count) * 22 + CGFloat(widthButtons.count) * 28 + 24
+        let width = max(topWidth, bottomWidth)
+        let height: CGFloat = 68
+        let y = selection.maxY + 9 + height <= bounds.height ? selection.maxY + 9 : max(0, selection.minY - height - 9)
+        return CGRect(x: min(max(4, selection.maxX - width), max(4, bounds.width - width - 4)), y: y, width: width, height: height)
     }
     private func updateToolbar() {
         let show = selection.width >= 3 && selection.height >= 3 && !dragging
         let bar = toolbarFrame()
-        for (i, button) in buttons.enumerated() {
+        for (i, button) in toolButtons.enumerated() {
             button.isHidden = !show
-            button.frame = CGRect(x: bar.minX + 6 + CGFloat(i)*34, y:bar.minY + 3, width:32,height:32)
-            let active = (i == 0 && tool == .rectangle) || (i == 1 && tool == .arrow) || (i == 2 && tool == .pen) || (i == 3 && tool == .highlight) || (i == 4 && tool == .mosaic) || (i == 5 && tool == .text) || (i == 6 && tool == .eraser)
+            button.frame = CGRect(x: bar.minX + 6 + CGFloat(i) * 34, y: bar.minY + 4, width: 32, height: 32)
+            let active = i < toolbarTools.count && tool == toolbarTools[i]
+            button.layer?.backgroundColor = active ? blue.withAlphaComponent(0.18).cgColor : NSColor.clear.cgColor
+        }
+        let actionStart = bar.minX + 6 + CGFloat(toolButtons.count) * 34
+        for (i, button) in actionButtons.enumerated() {
+            button.isHidden = !show
+            button.frame = CGRect(x: actionStart + CGFloat(i) * 34, y: bar.minY + 4, width: 32, height: 32)
+        }
+        for (i, button) in colorButtons.enumerated() {
+            button.isHidden = !show
+            button.frame = CGRect(x: bar.minX + 8 + CGFloat(i) * 22, y: bar.minY + 44, width: 16, height: 16)
+            button.layer?.borderWidth = i == colorIndex ? 2 : 0.6
+            button.layer?.borderColor = (i == colorIndex ? blue : NSColor.black.withAlphaComponent(0.35)).cgColor
+        }
+        let widthStart = bar.minX + 8 + CGFloat(colorButtons.count) * 22 + 8
+        for (i, button) in widthButtons.enumerated() {
+            button.isHidden = !show
+            button.frame = CGRect(x: widthStart + CGFloat(i) * 28, y: bar.minY + 41, width: 26, height: 22)
+            let active = CaptureStrokeWidth.allCases.indices.contains(i) && strokeWidth == CaptureStrokeWidth.allCases[i]
             button.layer?.backgroundColor = active ? blue.withAlphaComponent(0.18).cgColor : NSColor.clear.cgColor
         }
     }
     private func drawToolbar() {
         guard !selection.isEmpty, !dragging else { return }
-        let path = NSBezierPath(roundedRect: toolbarFrame(), xRadius:7,yRadius:7)
+        let path = NSBezierPath(roundedRect: toolbarFrame(), xRadius: 7, yRadius: 7)
         NSColor(calibratedWhite: 0.96, alpha: 0.98).setFill(); path.fill()
         NSColor(calibratedWhite: 0.7, alpha: 0.8).setStroke(); path.lineWidth = 0.7; path.stroke()
     }
@@ -282,11 +451,14 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
             guard let first = mark.points.first else { continue }
             let last = mark.points.last ?? first
             if mark.tool == .text {
-                mark.text.draw(at:first, withAttributes:[.font:NSFont.systemFont(ofSize:18,weight:.semibold), .foregroundColor:NSColor.systemRed])
+                mark.text.draw(at: first, withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
+                    .foregroundColor: mark.strokeColor
+                ])
                 continue
             }
             if mark.tool == .mosaic {
-                let area = rect(first,last).intersection(bounds)
+                let area = rect(first, last).intersection(bounds)
                 let sx = CGFloat(image.width)/bounds.width, sy = CGFloat(image.height)/bounds.height
                 let block: CGFloat = 10
                 if !area.isEmpty {
@@ -306,8 +478,8 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
                 continue
             }
             let path = NSBezierPath(); path.lineCapStyle = .round; path.lineJoinStyle = .round
-            (mark.tool == .highlight ? NSColor.systemYellow.withAlphaComponent(0.5) : NSColor.systemRed).setStroke()
-            path.lineWidth = mark.tool == .highlight ? 12 : 3
+            mark.strokeColor.setStroke()
+            path.lineWidth = mark.lineWidth
             if mark.tool == .rectangle { path.appendRect(rect(first,last)) }
             else if mark.tool == .arrow {
                 path.move(to:first); path.line(to:last)
@@ -368,13 +540,17 @@ private final class CaptureView: NSView, NSTextFieldDelegate {
         let result = NSImage(size: selection.size); result.addRepresentation(rep)
         return result
     }
-    @objc private func rectangleTool() { tool = tool == .rectangle ? .select : .rectangle; updateToolbar(); needsDisplay = true }
-    @objc private func arrowTool() { tool = tool == .arrow ? .select : .arrow; updateToolbar(); needsDisplay = true }
-    @objc private func penTool() { tool = tool == .pen ? .select : .pen; updateToolbar(); needsDisplay = true }
-    @objc private func highlightTool() { tool = tool == .highlight ? .select : .highlight; updateToolbar(); needsDisplay = true }
-    @objc private func mosaicTool() { tool = tool == .mosaic ? .select : .mosaic; updateToolbar(); needsDisplay = true }
-    @objc private func textTool() { tool = tool == .text ? .select : .text; updateToolbar(); needsDisplay = true }
-    @objc private func eraseTool() { tool = tool == .eraser ? .select : .eraser; updateToolbar(); needsDisplay = true }
+    @objc private func selectTool(_ sender: NSButton) {
+        guard toolbarTools.indices.contains(sender.tag) else { return }
+        apply(.setTool(toolbarTools[sender.tag]))
+    }
+    @objc private func selectColor(_ sender: NSButton) { apply(.setColor(sender.tag)) }
+    @objc private func selectWidth(_ sender: NSButton) {
+        guard CaptureStrokeWidth.allCases.indices.contains(sender.tag) else { return }
+        strokeWidth = CaptureStrokeWidth.allCases[sender.tag]
+        updateToolbar()
+        needsDisplay = true
+    }
     @objc private func undoMark() { if let mark = marks.popLast() { redoMarks.append(mark); needsDisplay = true } }
     @objc private func redoMark() { if let mark = redoMarks.popLast() { marks.append(mark); needsDisplay = true } }
     @objc private func cancelAction() { onFinish?(nil,false) }
