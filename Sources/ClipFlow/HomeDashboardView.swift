@@ -1,4 +1,5 @@
 import AppKit
+import ClipFlowKit
 import ImageIO
 @preconcurrency import AVFoundation
 import SwiftUI
@@ -57,7 +58,7 @@ enum HomeWidgetRegistry {
         .init(id: .memo, title: "备忘录", defaultOrder: 3, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
         .init(id: .camera, title: "镜子", defaultOrder: 4, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium, .large]),
         .init(id: .dailyReview, title: "每日复盘", defaultOrder: 5, defaultVisibility: true, defaultSize: .medium, allowedSizes: [.medium]),
-        .init(id: .clock, title: "时间", defaultOrder: 6, defaultVisibility: false, defaultSize: .small, allowedSizes: [.small, .medium])
+        .init(id: .clock, title: "时间", defaultOrder: 6, defaultVisibility: false, defaultSize: .small, allowedSizes: [.small, .medium, .large])
     ]
 
     static var orderedIDs: [HomeDashboardModel.WidgetID] {
@@ -133,6 +134,8 @@ final class HomeDashboardModel: ObservableObject {
     }
     @Published var memoLibraryOpen = false
     @Published var dailyReviewHistoryOpen = false
+    /// “时间”组件里除本地外额外显示的时区标识，按用户排列顺序保存。
+    @Published private(set) var worldClockZones: [String]
 
     private enum Key {
         static let quickNote = "home.quickNote"
@@ -140,6 +143,7 @@ final class HomeDashboardModel: ObservableObject {
         static let hiddenWidgets = "home.hiddenWidgets"
         static let widgetSizes = "home.widgetSizes"
         static let mirrorAspect = "home.mirrorAspect"
+        static let worldClockZones = "home.worldClockZones"
     }
 
     private let defaults: UserDefaults
@@ -149,6 +153,10 @@ final class HomeDashboardModel: ObservableObject {
         self.memoLibrary = memoLibrary ?? MemoLibraryModel()
         mirrorAspect = MirrorAspect(rawValue: defaults.string(forKey: Key.mirrorAspect) ?? "") ?? .automatic
         quickNote = defaults.string(forKey: Key.quickNote) ?? ""
+        worldClockZones = WorldClock.normalizedZones(
+            defaults.stringArray(forKey: Key.worldClockZones) ?? [],
+            localIdentifier: TimeZone.current.identifier
+        )
 
         let registeredIDs = HomeWidgetRegistry.orderedIDs
         let savedOrder = defaults.stringArray(forKey: Key.widgetOrder) ?? []
@@ -247,6 +255,32 @@ final class HomeDashboardModel: ObservableObject {
         let target = min(max(index + direction, 0), allowed.count - 1)
         guard target != index else { return }
         setSize(allowed[target], for: widget)
+    }
+
+    func addWorldClockZone(_ identifier: String) {
+        guard let updated = WorldClock.adding(
+            identifier, to: worldClockZones, localIdentifier: TimeZone.current.identifier
+        ) else { return }
+        setWorldClockZones(updated)
+    }
+
+    func removeWorldClockZone(_ identifier: String) {
+        setWorldClockZones(worldClockZones.filter { $0 != identifier })
+    }
+
+    func moveWorldClockZone(_ identifier: String, by offset: Int) {
+        guard let index = worldClockZones.firstIndex(of: identifier) else { return }
+        let target = min(max(index + offset, 0), worldClockZones.count - 1)
+        guard target != index else { return }
+        var updated = worldClockZones
+        updated.remove(at: index)
+        updated.insert(identifier, at: target)
+        setWorldClockZones(updated)
+    }
+
+    private func setWorldClockZones(_ zones: [String]) {
+        worldClockZones = zones
+        defaults.set(zones, forKey: Key.worldClockZones)
     }
 
     func chooseMirrorPhoto() {
@@ -603,25 +637,12 @@ struct HomeDashboardView: View {
         case .clock:
             IslandWidgetCard(
                 title: widget.title,
-                subtitle: "上海 · 中国标准时间",
+                subtitle: "\(WorldClock.cityName(for: TimeZone.current.identifier)) · \(WorldClock.utcOffsetText(.current, at: .now))",
                 widget: widget,
                 editing: editingWidgets,
                 model: model
             ) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(context.date, format: .dateTime.hour().minute())
-                            .font(.system(size: 34, weight: .semibold))
-                            .monospacedDigit()
-                        Text(context.date.formatted(.dateTime.year().month(.wide).day().weekday(.wide)))
-                            .font(.system(size: 12))
-                            .foregroundStyle(theme.foregroundSecondary)
-                        Text(TimeZone.current.identifier)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(theme.muted)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                WorldClockWidget(model: model, size: model.size(for: widget))
             }
 
         case .quickNote:
