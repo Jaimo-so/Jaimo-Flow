@@ -214,7 +214,53 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    // API Key / 密码编辑器：生成密码与内容检查
+    struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            return z ^ (z >> 31)
+        }
+    }
+    var seeded = SeededGenerator(state: 42)
+    let fullOptions = PasswordOptions(length: 24)
+    for _ in 0..<200 {
+        let password = PasswordGenerator.generate(fullOptions, using: &seeded)
+        try require(password.count == 24, "生成密码长度不正确")
+        try require(password.contains { $0.isUppercase } && password.contains { $0.isLowercase }
+            && password.contains { $0.isNumber } && password.contains { !$0.isLetter && !$0.isNumber },
+            "生成密码没有覆盖所有已启用的字符类型")
+        try require(!password.contains { "0Oo1lI|`'\" \\".contains($0) || $0.isWhitespace },
+            "生成密码包含易混淆字符、引号、反斜杠或空白")
+    }
+    var digitsOnly = PasswordOptions(length: 3, includeUppercase: false, includeLowercase: false, includeSymbols: false, excludeAmbiguous: false)
+    try require(digitsOnly.length == PasswordOptions.lengthRange.lowerBound, "密码长度没有限制在最小值")
+    digitsOnly.length = 999
+    try require(digitsOnly.length == PasswordOptions.lengthRange.upperBound, "密码长度没有限制在最大值")
+    digitsOnly.length = 12
+    let pin = PasswordGenerator.generate(digitsOnly, using: &seeded)
+    try require(pin.count == 12 && pin.allSatisfy { $0.isNumber }, "仅数字选项生成了非数字字符")
+    let noneSelected = PasswordOptions(length: 10, includeUppercase: false, includeLowercase: false, includeDigits: false, includeSymbols: false)
+    try require(!noneSelected.hasAnyCharacterSet, "未选择任何字符类型时应提示")
+    try require(PasswordGenerator.generate(noneSelected, using: &seeded).count == 10, "未选择字符类型时没有回退到默认字符集")
+    try require(PasswordGenerator.generate() != PasswordGenerator.generate(), "两次生成得到相同密码")
+
+    try require(SecretInspector.inspect("123456").strength == .weak, "弱密码强度判断错误")
+    try require(SecretInspector.inspect("aaaaaaaaaaaaaaaaaaaaaaaa").strength == .weak, "重复字符密码被判为强")
+    try require(SecretInspector.inspect(PasswordGenerator.generate(fullOptions, using: &seeded)).strength >= .strong, "24 位随机密码强度过低")
+    try require(SecretInspector.inspect("sk-proj-AbCdEf0123456789XyZ0123456789abcdEF").strength == .veryStrong, "长 API Key 强度判断过低")
+    let clean = SecretInspector.inspect("sk-abc")
+    try require(clean.whitespaceWarning == nil && clean.characterCount == 6, "干净内容出现空白提示或字符数错误")
+    let pasted = SecretInspector.inspect("sk-abc\n")
+    try require(pasted.hasTrailingWhitespace && pasted.containsLineBreak && pasted.whitespaceWarning != nil, "没有发现结尾换行")
+    try require(SecretInspector.inspect(" sk-abc").whitespaceWarning == "开头含有空格", "没有发现开头空格")
+    try require(SecretInspector.trimmedEdges("  sk a b\n") == "sk a b", "去除首尾空白时改动了中间内容")
+    try require(SecretInspector.inspect("").strength == .weak && SecretInspector.inspect("").whitespaceWarning == nil, "空内容检查结果错误")
+
+    print("Jaimo Flow self-test passed: 47 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)

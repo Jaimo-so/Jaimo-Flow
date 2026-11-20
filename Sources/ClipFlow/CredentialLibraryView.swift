@@ -1,3 +1,4 @@
+import ClipFlowKit
 import SwiftUI
 
 struct CredentialLibraryView: View {
@@ -105,7 +106,31 @@ struct CredentialEditorView: View {
     @ObservedObject var model: AppModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var revealSecret = false
+    @State private var generatorOpen = false
     @FocusState private var titleFocused: Bool
+    @AppStorage("credentialGenerator.length") private var generatorLength = PasswordOptions.default.length
+    @AppStorage("credentialGenerator.uppercase") private var generatorUppercase = true
+    @AppStorage("credentialGenerator.lowercase") private var generatorLowercase = true
+    @AppStorage("credentialGenerator.digits") private var generatorDigits = true
+    @AppStorage("credentialGenerator.symbols") private var generatorSymbols = true
+    @AppStorage("credentialGenerator.excludeAmbiguous") private var generatorExcludeAmbiguous = true
+
+    private var generatorOptions: PasswordOptions {
+        PasswordOptions(
+            length: generatorLength,
+            includeUppercase: generatorUppercase,
+            includeLowercase: generatorLowercase,
+            includeDigits: generatorDigits,
+            includeSymbols: generatorSymbols,
+            excludeAmbiguous: generatorExcludeAmbiguous
+        )
+    }
+
+    private func fillGeneratedPassword() {
+        model.credentialDraftSecret = PasswordGenerator.generate(generatorOptions)
+        // Show the generated value so the user can see what will be saved.
+        revealSecret = true
+    }
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
@@ -143,7 +168,18 @@ struct CredentialEditorView: View {
                         .buttonStyle(.plain)
                         .help(revealSecret ? "隐藏内容" : "显示内容")
                         .accessibilityLabel(revealSecret ? "隐藏内容" : "显示内容")
+                        Button { generatorOpen.toggle() } label: {
+                            Image(systemName: "wand.and.stars")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(generatorOpen ? theme.accent : theme.foreground)
+                        .help("生成随机密码")
+                        .accessibilityLabel("生成随机密码")
                     }
+                    secretStatus(theme: theme)
+                }
+                if generatorOpen {
+                    generatorPanel(theme: theme)
                 }
                 Text("保存在本机 macOS 钥匙串中。")
                     .font(.system(size: 11))
@@ -164,6 +200,102 @@ struct CredentialEditorView: View {
             .padding(20)
         }
         .onAppear { titleFocused = true }
+    }
+
+    /// Character count, rough strength and a warning for stray leading/trailing whitespace.
+    @ViewBuilder
+    private func secretStatus(theme: ClipFlowTheme) -> some View {
+        let secret = model.credentialDraftSecret
+        if !secret.isEmpty {
+            let inspection = SecretInspector.inspect(secret)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    HStack(spacing: 3) {
+                        ForEach(SecretStrength.allCases, id: \.self) { level in
+                            Capsule()
+                                .fill(level <= inspection.strength ? strengthColor(inspection.strength, theme: theme) : theme.chipHigh)
+                                .frame(width: 18, height: 4)
+                        }
+                    }
+                    .accessibilityHidden(true)
+                    Text("强度：\(inspection.strength.label) · \(inspection.characterCount) 个字符")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
+                        .help("按长度和字符种类粗略估算，约 \(inspection.estimatedBits) 位熵；API Key 通常由服务方随机生成，可忽略强度提示。")
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .combine)
+                if let warning = inspection.whitespaceWarning {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text(warning)
+                        if inspection.hasEdgeWhitespace {
+                            Button("去除首尾空白") {
+                                model.credentialDraftSecret = SecretInspector.trimmedEdges(secret)
+                            }
+                            .buttonStyle(.link)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.danger)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    private func strengthColor(_ strength: SecretStrength, theme: ClipFlowTheme) -> Color {
+        switch strength {
+        case .weak: return theme.danger
+        case .fair: return theme.star
+        case .strong, .veryStrong: return theme.accent
+        }
+    }
+
+    private func generatorPanel(theme: ClipFlowTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("长度").font(.system(size: 12, weight: .medium))
+                Slider(
+                    value: Binding(
+                        get: { Double(generatorLength) },
+                        set: { generatorLength = PasswordOptions.clampLength(Int($0.rounded())) }
+                    ),
+                    in: Double(PasswordOptions.lengthRange.lowerBound)...Double(PasswordOptions.lengthRange.upperBound),
+                    step: 1
+                )
+                .accessibilityLabel("密码长度")
+                .accessibilityValue("\(generatorLength) 位")
+                Text("\(generatorLength)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 24, alignment: .trailing)
+            }
+            HStack(spacing: 12) {
+                Toggle("A-Z", isOn: $generatorUppercase)
+                Toggle("a-z", isOn: $generatorLowercase)
+                Toggle("0-9", isOn: $generatorDigits)
+                Toggle("符号", isOn: $generatorSymbols)
+            }
+            .toggleStyle(.checkbox)
+            .font(.system(size: 12))
+            Toggle("排除易混淆字符（0/O、1/l/I 等）", isOn: $generatorExcludeAmbiguous)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12))
+            HStack {
+                if !generatorOptions.hasAnyCharacterSet {
+                    Text("未选择字符类型，将使用小写字母和数字")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
+                }
+                Spacer()
+                Button(model.credentialDraftSecret.isEmpty ? "生成并填入" : "重新生成并替换", action: fillGeneratedPassword)
+                    .help("生成随机密码并填入上方输入框")
+            }
+        }
+        .padding(12)
+        .background(theme.chip)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
     }
 }
 
