@@ -161,7 +161,7 @@ struct ContentView: View {
                 .foregroundStyle(theme.muted)
                 .accessibilityHidden(true)
             TextField(
-                model.isCredentialGroup ? "搜索 API Key / 密码名称…" : model.libraryMode == .history ? "搜索剪贴板历史…" : "搜索提示词…",
+                model.isCredentialGroup ? "搜索 API Key / 密码名称…" : model.libraryMode == .history ? "搜索剪贴板历史…（支持 app: date: is: -排除）" : "搜索提示词…",
                 text: model.libraryMode == .history ? $model.query : $model.promptQuery
             )
                 .textFieldStyle(.plain)
@@ -169,7 +169,8 @@ struct ContentView: View {
                 .foregroundStyle(theme.foreground)
                 .focused($searchFocused)
                 .accessibilityLabel(model.isCredentialGroup ? "搜索 API Key / 密码名称" : model.libraryMode == .history ? "搜索剪贴板历史" : "搜索提示词")
-                .accessibilityHint(model.isCredentialGroup ? "按名称搜索已保存的 API Key 和密码" : model.libraryMode == .history ? "输入关键词筛选剪贴板记录" : "输入关键词筛选提示词")
+                .help(model.libraryMode == .history && !model.isCredentialGroup ? ContentView.searchSyntaxHelp : "")
+                .accessibilityHint(model.isCredentialGroup ? "按名称搜索已保存的 API Key 和密码" : model.libraryMode == .history ? "输入关键词筛选剪贴板记录，空格分隔多个关键词；可用 app:来源、date:今天、is:代码、减号排除" : "输入关键词筛选提示词")
             KeyCap(text: "⌘F", muted: true)
                 .accessibilityHidden(true)
         }
@@ -369,8 +370,21 @@ struct ContentView: View {
     }
 }
 
+extension ContentView {
+    static let searchSyntaxHelp = """
+    搜索语法（可组合使用）：
+    • 关键词1 关键词2：空格分隔，全部命中
+    • "完整 短语"：按整段匹配
+    • -词：排除包含该词的记录
+    • app:微信 / 来源:微信：按来源应用
+    • date:今天：今天、昨天、前天、7天、本周、本月、11-20
+    • is:代码：文字、代码、链接、图片、收藏
+    """
+}
+
 private struct HistoryListView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -397,17 +411,34 @@ private struct HistoryListView: View {
                 } else {
                     ScrollViewReader { reader in
                         ScrollView(.vertical) {
-                            LazyVStack(spacing: 2) {
-                                ForEach(model.filteredItems) { item in
-                                    ClipRow(item: item, selected: model.selectedID == item.id) {
-                                        model.selectedID = item.id
-                                        model.focusArea = .other
-                                    }
-                                    .id(item.id)
+                            VStack(spacing: 0) {
+                                if model.parsedQuery.hasStructuredFilters {
+                                    activeFilterBar
                                 }
+                                LazyVStack(spacing: 2, pinnedViews: [.sectionHeaders]) {
+                                    ForEach(model.filteredItemSections) { section in
+                                        Section {
+                                            ForEach(section.items) { item in
+                                                ClipRow(item: item, selected: model.selectedID == item.id) {
+                                                    model.selectedID = item.id
+                                                    model.focusArea = .other
+                                                }
+                                                .id(item.id)
+                                                .contextMenu {
+                                                    Button("只看来自「\(item.sourceAppName)」的记录") {
+                                                        model.filterBySource(of: item)
+                                                    }
+                                                    .disabled(item.sourceAppName.trimmingCharacters(in: .whitespaces).isEmpty)
+                                                }
+                                            }
+                                        } header: {
+                                            ClipDayHeader(title: section.title, count: section.items.count)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 6)
                             }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 6)
                         }
                         .onChange(of: model.selectedID) { id in
                             guard let id else { return }
@@ -424,13 +455,38 @@ private struct HistoryListView: View {
         .accessibilityLabel("剪贴板历史记录")
     }
 
+    private var activeFilterBar: some View {
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        return HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .accessibilityHidden(true)
+            Text(model.parsedQuery.summary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+            Button("清除") { model.query = "" }
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.foregroundSecondary)
+                .accessibilityLabel("清除搜索条件")
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(theme.muted)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("已生效的筛选：\(model.parsedQuery.summary)")
+    }
+
     private var emptyState: some View {
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let title: String
         let detail: String
         if !query.isEmpty {
-            title = "没有匹配「\(query)」的记录"
-            detail = "试试更短的关键词，或按 ESC 清空搜索后切换其他分类。"
+            let parsed = model.parsedQuery
+            title = parsed.hasStructuredFilters ? "没有符合筛选条件的记录" : "没有匹配「\(query)」的记录"
+            detail = parsed.hasStructuredFilters
+                ? "当前条件：\(parsed.summary)。可删掉部分条件，或按 ESC 清空搜索。"
+                : "多个关键词用空格分隔需全部命中；也可用 app:微信、date:今天、is:代码、-排除词 缩小范围。按 ESC 清空搜索。"
         } else if model.filter == .favorite {
             title = "还没有收藏的记录"
             detail = "选中一条记录后按 ⌘S 收藏，收藏项不会被数量上限淘汰。"
@@ -439,6 +495,34 @@ private struct HistoryListView: View {
             detail = "复制任意内容后会自动出现在这里。按 ⌥Space 可随时唤起窗口。"
         }
         return StateView(icon: "doc.on.clipboard", title: title, detail: detail)
+    }
+}
+
+private struct ClipDayHeader: View {
+    let title: String
+    let count: Int
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let theme = ClipFlowTheme(scheme: colorScheme)
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.foregroundSecondary)
+            Text("\(count)")
+                .font(.system(size: 10.5))
+                .monospacedDigit()
+                .foregroundStyle(theme.muted)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.top, 6)
+        .padding(.bottom, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.glass.opacity(0.96))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title)，\(count) 条")
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -588,6 +672,11 @@ private struct PreviewView: View {
             VStack(spacing: 7) {
                 ForEach(item.meta, id: \.self) { entry in infoLine(entry.key, entry.value, theme: theme) }
                 infoLine("来源", item.sourceAppName, theme: theme)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.filterBySource(of: item) }
+                    .help("点击只看来自「\(item.sourceAppName)」的记录")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint("只看来自该应用的剪贴板记录")
                 infoLine("复制时间", item.detailedTimeText, theme: theme)
             }
             .padding(.horizontal, 14)
