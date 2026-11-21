@@ -214,7 +214,9 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    let searchChecks = try testClipSearchQuery()
+
+    print("Jaimo Flow self-test passed: \(29 + searchChecks) checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)

@@ -101,6 +101,7 @@ final class AppModel: ObservableObject {
     private var toastDismissal: DispatchWorkItem?
     private var itemsRevision = 0
     private var filteredCache: (revision: Int, filter: ClipFilter, query: String, items: [ClipItem])?
+    private var parsedQueryCache: (raw: String, parsedAt: Date, query: ClipSearchQuery)?
     private var promptsRevision = 0
     private var filteredPromptsCache: (
         revision: Int,
@@ -116,7 +117,9 @@ final class AppModel: ObservableObject {
     }
 
     var filteredItems: [ClipItem] {
+        // 带上当天日期，跨过零点后“date:今天”这类条件会重新计算。
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            + "\u{1}" + String(Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970))
         if let filteredCache,
            filteredCache.revision == itemsRevision,
            filteredCache.filter == filter,
@@ -134,13 +137,34 @@ final class AppModel: ObservableObject {
             case .apiKey: matchesFilter = false
             }
             guard matchesFilter else { return false }
-            guard !needle.isEmpty else { return true }
-            return item.title.lowercased().contains(needle)
-                || item.sourceAppName.lowercased().contains(needle)
-                || (item.fullText?.lowercased().contains(needle) ?? false)
+            return parsedQuery.matches(item)
         }
         filteredCache = (itemsRevision, filter, needle, result)
         return result
+    }
+
+    /// 解析后的剪切板搜索条件：多关键词、"短语"、-排除、app:/来源:、date:/时间:、is:/类型:。
+    var parsedQuery: ClipSearchQuery {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsedQueryCache, parsedQueryCache.raw == needle,
+           Calendar.current.isDate(parsedQueryCache.parsedAt, inSameDayAs: Date()) {
+            return parsedQueryCache.query
+        }
+        let parsed = ClipSearchQuery.parse(needle)
+        parsedQueryCache = (needle, Date(), parsed)
+        return parsed
+    }
+
+    /// 按复制日期分组后的历史，用于在列表中显示“今天 / 昨天 / 11月18日 周三”小标题。
+    var filteredItemSections: [ClipDaySection] {
+        ClipDaySection.group(filteredItems)
+    }
+
+    /// 只看与该记录同一来源应用的历史（替换搜索框中已有的来源条件，保留其余关键词）。
+    func filterBySource(of item: ClipItem) {
+        let name = item.sourceAppName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        query = ClipSearchQuery.replacingSourceFilter(in: query, with: name)
     }
 
     var filteredPrompts: [PromptItem] {
