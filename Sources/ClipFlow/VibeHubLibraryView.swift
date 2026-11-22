@@ -1,5 +1,7 @@
 import AppKit
+import ClipFlowKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct VibeHubLibraryView: View {
     @ObservedObject var library: VibeHubLibraryModel
@@ -94,6 +96,7 @@ struct VibeHubLibraryView: View {
             Button(action: agent.openComposer) { Label("Agent 整理", systemImage: "sparkles") }
                 .buttonStyle(GlassButtonStyle(kind: .primary)).fixedSize()
                 .disabled(library.loadFailed)
+            exportMenu
             Button(action: agent.openSettings) { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(FlowIconButtonStyle()).disabled(agent.isRunning)
                 .accessibilityLabel("Agent 设置").help("Agent 设置")
@@ -190,6 +193,11 @@ struct VibeHubLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(library.selectedID == item.id ? [.isSelected] : [])
+                    .contextMenu {
+                        Button("复制为 Markdown") {
+                            copy(library.markdown(for: item), success: "已复制「\(displayTitle(item))」的 Markdown")
+                        }
+                    }
                 }
             }.padding(9)
         }
@@ -223,6 +231,7 @@ struct VibeHubLibraryView: View {
                             .accessibilityLabel("话术标签")
                     }
                     textSection("话术原文", detail: "复制后可直接发给 Agent", keyPath: \.phrase, height: 155, theme: theme)
+                    similarNotice(item, theme: theme)
                     textSection("适用场景", detail: "什么时候用这句话", keyPath: \.scenario, height: 76, theme: theme)
                     textSection("术语与含义", detail: "记录定义、意义和理解", keyPath: \.meaning, height: 110, theme: theme)
                 }
@@ -264,17 +273,7 @@ struct VibeHubLibraryView: View {
                     .buttonStyle(GlassButtonStyle(kind: .quiet)).fixedSize()
             }
             Button {
-                if let monitor = appModel.clipboardMonitor {
-                    switch monitor.write(text: item.phrase) {
-                    case .failure: appModel.showToast("复制失败，请重试")
-                    case .text, .image: appModel.showToast("已复制完整话术")
-                    }
-                    return
-                }
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                if pasteboard.setString(item.phrase, forType: .string) { appModel.showToast("已复制完整话术") }
-                else { appModel.showToast("复制失败，请重试") }
+                copy(item.phrase, success: "已复制完整话术")
             } label: { Label("复制话术", systemImage: "doc.on.doc") }
             .buttonStyle(GlassButtonStyle(kind: .primary)).fixedSize()
             .disabled(item.phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -316,5 +315,101 @@ struct VibeHubLibraryView: View {
 
     private func create() {
         if library.createPhrase() != nil { titleFocused = true }
+    }
+
+    private var exportMenu: some View {
+        let visibleCount = library.filteredItems.count
+        return Menu {
+            Button("复制当前列表为 Markdown（\(visibleCount) 条）") {
+                copy(library.markdownForVisibleItems(), success: "已复制 \(visibleCount) 条话术的 Markdown")
+            }
+            .disabled(visibleCount == 0)
+            Button("导出当前列表为 Markdown 文件…", action: exportVisibleItems)
+                .disabled(visibleCount == 0)
+            Divider()
+            Button("复制所选话术为 Markdown") {
+                if let item = library.selectedItem {
+                    copy(library.markdown(for: item), success: "已复制「\(displayTitle(item))」的 Markdown")
+                }
+            }
+            .disabled(library.selectedItem == nil)
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(library.loadFailed)
+        .accessibilityLabel("导出话术")
+        .help("按当前分类和搜索结果导出为 Markdown")
+    }
+
+    @ViewBuilder
+    private func similarNotice(_ item: VibeHubItem, theme: ClipFlowTheme) -> some View {
+        let similar = library.similarItems(to: item)
+        if !similar.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(similar.count == 1 ? "话术库里已有相似的话术" : "话术库里已有 \(similar.count) 条相似的话术",
+                      systemImage: "square.on.square")
+                    .font(.system(size: 12, weight: .medium))
+                ForEach(similar) { match in
+                    HStack(spacing: 6) {
+                        Text(displayTitle(match.item)).lineLimit(1)
+                        Text(match.score >= 0.999 ? "相同" : "相似 \(Int((match.score * 100).rounded()))%")
+                            .monospacedDigit().foregroundStyle(theme.muted)
+                        Spacer(minLength: 0)
+                        Button("查看") { library.reveal(match.item.id) }
+                            .buttonStyle(GlassButtonStyle(kind: .quiet)).fixedSize()
+                            .accessibilityLabel("查看相似话术「\(displayTitle(match.item))」")
+                    }
+                    .font(.system(size: 11))
+                }
+                Text("可以合并后删除多余的一条，避免重复收录。")
+                    .font(.system(size: 11)).foregroundStyle(theme.muted)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.chip)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func displayTitle(_ item: VibeHubItem) -> String {
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "无标题话术" : title
+    }
+
+    private func copy(_ text: String, success: String) {
+        if let monitor = appModel.clipboardMonitor {
+            switch monitor.write(text: text) {
+            case .failure: appModel.showToast("复制失败，请重试")
+            case .text, .image: appModel.showToast(success)
+            }
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if pasteboard.setString(text, forType: .string) { appModel.showToast(success) }
+        else { appModel.showToast("复制失败，请重试") }
+    }
+
+    private func exportVisibleItems() {
+        library.flush()
+        let count = library.filteredItems.count
+        guard count > 0 else { return }
+        let markdown = library.markdownForVisibleItems()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = VibeHubMarkdown.suggestedFileName(scopeTitle: library.scopeTitle)
+        panel.prompt = "导出"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try Data(markdown.utf8).write(to: url, options: .atomic)
+            appModel.showToast("已导出 \(count) 条话术到「\(url.lastPathComponent)」")
+        } catch {
+            appModel.showToast("导出失败：\(error.localizedDescription)")
+        }
     }
 }

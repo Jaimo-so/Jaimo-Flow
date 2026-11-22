@@ -1,3 +1,4 @@
+import ClipFlowKit
 import Foundation
 import SwiftUI
 
@@ -48,6 +49,20 @@ struct VibeHubItem: Codable, Identifiable, Equatable {
             meaning: "哈希路由（Hash Routing）使用网址中 # 后面的片段表示当前页面，例如 #/home 和 #/settings。切换页面时更新这个片段，刷新时根据它恢复页面，浏览器前进和后退时同步显示对应页面。",
             isFavorite: false, createdAt: now, updatedAt: now
         )
+    }
+}
+
+struct VibeHubSimilarItem: Identifiable {
+    let item: VibeHubItem
+    let score: Double
+    var id: UUID { item.id }
+}
+
+extension VibeHubItem {
+    var snapshot: VibeHubPhraseSnapshot {
+        VibeHubPhraseSnapshot(id: id.uuidString, title: title, phrase: phrase, category: category.rawValue,
+                              tags: tags, scenario: scenario, meaning: meaning,
+                              isFavorite: isFavorite, updatedAt: updatedAt)
     }
 }
 
@@ -109,6 +124,46 @@ final class VibeHubLibraryModel: ObservableObject {
     }
 
     func count(in scope: Scope) -> Int { items.filter { matches($0, scope: scope) }.count }
+
+    /// Human-readable name of the current scope, used in export titles and file names.
+    var scopeTitle: String {
+        switch scope {
+        case .all: return "全部"
+        case .favorites: return "收藏"
+        case .category(let category): return category.rawValue
+        }
+    }
+
+    /// Markdown for exactly what the list currently shows (scope + search).
+    func markdownForVisibleItems(exportedAt: Date = Date()) -> String {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = needle.isEmpty ? "Vibehub 话术 · \(scopeTitle)" : "Vibehub 话术 · \(scopeTitle) · 搜索“\(needle)”"
+        return VibeHubMarkdown.document(filteredItems.map(\.snapshot), title: title,
+                                        categoryOrder: VibeHubCategory.allCases.map(\.rawValue),
+                                        exportedAt: exportedAt)
+    }
+
+    func markdown(for item: VibeHubItem) -> String {
+        VibeHubMarkdown.section(item.snapshot, headingLevel: 2) + "\n"
+    }
+
+    /// Other phrases whose original text is the same or nearly the same as `item`.
+    func similarItems(to item: VibeHubItem) -> [VibeHubSimilarItem] {
+        let others = items.filter { $0.id != item.id }
+        return VibeHubSimilarity.matches(for: item.snapshot, in: others.map(\.snapshot)).compactMap { match in
+            others.first { $0.id.uuidString == match.id }.map { VibeHubSimilarItem(item: $0, score: match.score) }
+        }
+    }
+
+    /// Shows a phrase even if the current search or scope hides it.
+    func reveal(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        if !filteredItems.contains(where: { $0.id == id }) {
+            query = ""
+            if !matches(item, scope: scope) { scope = .all }
+        }
+        selectedID = id
+    }
 
     @discardableResult
     func createPhrase() -> UUID? {
