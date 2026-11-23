@@ -283,4 +283,14 @@ final class ClipboardMonitor {
         let wroteCompatibilityImage = pasteboard.setData(tiff, forType: .tiff)
         return wroteOriginal || wroteCompatibilityImage
     }
+
+    func writeFileURL(_ url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        pasteboard.clearContents()
+        let didWrite = pasteboard.writeObjects([url as NSURL])
+        guard didWrite else { return false }
+        ignoredChangeCount = pasteboard.changeCount
+        lastChangeCount = pasteboard.changeCount
+        return true
+    }
 }

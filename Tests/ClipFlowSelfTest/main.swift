@@ -214,7 +214,9 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    try testClipImageFile()
+
+    print("Jaimo Flow self-test passed: 52 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)

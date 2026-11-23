@@ -1,6 +1,7 @@
 import AppKit
 import ClipFlowKit
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -371,6 +372,63 @@ final class AppModel: ObservableObject {
         case .image(let size): finishCopy(message: "已复制图片到剪贴板 · \(size)")
         case .failure: showToast("复制失败，请检查剪贴板权限")
         }
+    }
+
+    func beginSaveSelectedImage() {
+        guard let url = selectedImageURL() else { return }
+        let fileExtension = ClipImageFile.preferredExtension(for: url)
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.title = "另存为图片"
+        panel.prompt = "保存"
+        panel.nameFieldStringValue = ClipImageFile.suggestedFileName(
+            copiedAt: selectedItem?.copiedAt ?? Date(),
+            sourceAppName: selectedItem?.sourceAppName ?? "",
+            pathExtension: fileExtension
+        )
+        if let type = UTType(filenameExtension: fileExtension) {
+            panel.allowedContentTypes = [type]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try ClipImageFile.export(from: url, to: destination)
+            showToast("已保存到「\(destination.lastPathComponent)」")
+        } catch {
+            showToast("保存失败：\(error.localizedDescription)")
+        }
+    }
+
+    func revealSelectedImage() {
+        guard let url = selectedImageURL() else { return }
+        onRequestClose?()
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func openSelectedImage() {
+        guard let url = selectedImageURL() else { return }
+        onRequestClose?()
+        NSWorkspace.shared.open(url)
+    }
+
+    func copySelectedImageFile() {
+        guard let url = selectedImageURL(), let clipboardMonitor else { return }
+        if clipboardMonitor.writeFileURL(url) {
+            finishCopy(message: "已复制文件「\(url.lastPathComponent)」，可粘贴到访达或其他应用")
+        } else {
+            showToast("复制文件失败，请检查剪贴板权限")
+        }
+    }
+
+    private func selectedImageURL() -> URL? {
+        guard case .ready = phase,
+              let item = selectedItem,
+              item.kind == .image,
+              let path = item.imagePath else { return nil }
+        guard FileManager.default.fileExists(atPath: path.path) else {
+            showToast("图片文件已不存在")
+            return nil
+        }
+        return path
     }
 
     func toggleFavorite() {
