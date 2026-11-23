@@ -20,6 +20,16 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
     @Published private(set) var meterLevels: [Double] = Array(repeating: 0.08, count: 28)
 
     var onWillRevealRecording: (() -> Void)?
+    var onDidFinishRecording: ((URL) -> Void)?
+
+    init(recordingsDirectory directoryOverride: URL? = nil) {
+        super.init()
+        if let directory = directoryOverride ?? (try? recordingsDirectory()),
+           let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey]),
+           let latest = files.filter({ $0.pathExtension.lowercased() == "m4a" }).sorted(by: { $0.lastPathComponent > $1.lastPathComponent }).first {
+            status = .saved(latest)
+        }
+    }
 
     private var recorder: AVAudioRecorder?
     private var meterTimer: Timer?
@@ -52,6 +62,16 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
     var latestRecordingURL: URL? {
         if case .saved(let url) = status { return url }
         return nil
+    }
+
+    func canDeleteRecording(_ url: URL) -> Bool {
+        !(isActive && currentRecordingURL == url)
+    }
+
+    func recordingWasDeleted(_ url: URL, latestRemaining: URL?) {
+        guard case .saved(let savedURL) = status, savedURL == url else { return }
+        status = latestRemaining.map { .saved($0) } ?? .idle
+        elapsedTime = 0
     }
 
     func toggleRecording() {
@@ -103,6 +123,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
 
         resetRecorder()
         status = .saved(url)
+        onDidFinishRecording?(url)
     }
 
     func finishIfNeeded() {
@@ -251,10 +272,16 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
 
 struct AudioRecorderWidget: View {
     @ObservedObject var model: AudioRecorderModel
+    @ObservedObject var transcription: RecordingTranscriptionManager
+    let onOpenWorkspace: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
+        let latestURL = model.latestRecordingURL ?? transcription.recordings.first?.url
+        let latestState = latestURL.map { transcription.state(for: $0) } ?? .idle
+        let latestTranscript = latestURL.flatMap { transcription.transcript(for: $0) }
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 ZStack {
@@ -270,12 +297,7 @@ struct AudioRecorderWidget: View {
                     Text(model.elapsedText)
                         .font(.system(size: 21, weight: .semibold, design: .monospaced))
                         .monospacedDigit()
-                    if let activityLabel {
-                        Text(activityLabel)
-                            .font(.system(size: 10.5))
-                            .lineLimit(2)
-                            .foregroundStyle(theme.muted)
-                    }
+                    statusSubtitle(latestURL: latestURL, latestState: latestState, latestTranscript: latestTranscript, theme: theme)
                 }
 
                 Spacer(minLength: 8)
@@ -309,10 +331,29 @@ struct AudioRecorderWidget: View {
                     Button("打开系统设置", action: model.openPrivacySettings)
                         .buttonStyle(GlassButtonStyle(kind: .normal))
                         .fixedSize()
-                } else if model.latestRecordingURL != nil {
-                    Button("在访达中显示", action: model.revealLatestRecording)
-                        .buttonStyle(GlassButtonStyle(kind: .quiet))
-                        .fixedSize()
+                } else if !model.isActive {
+                    Button {
+                        if let latestURL {
+                            transcription.selectRecording(latestURL)
+                        }
+                        onOpenWorkspace()
+                    } label: {
+                        if latestState.isTranscribing {
+                            Label("查看转写", systemImage: "captions.bubble")
+                        } else if latestTranscript != nil {
+                            Label("查看字幕", systemImage: "captions.bubble")
+                        } else {
+                            Label("转写记录", systemImage: "captions.bubble")
+                        }
+                    }
+                    .buttonStyle(GlassButtonStyle(kind: .normal))
+                    .fixedSize()
+
+                    if latestURL != nil {
+                        Button("访达", action: model.revealLatestRecording)
+                            .buttonStyle(GlassButtonStyle(kind: .quiet))
+                            .fixedSize()
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -321,6 +362,55 @@ struct AudioRecorderWidget: View {
         .frame(minHeight: 96)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("录音组件")
+    }
+
+    @ViewBuilder
+    private func statusSubtitle(
+        latestURL: URL?,
+        latestState: RecordingTranscriptionState,
+        latestTranscript: RecordingTranscript?,
+        theme: ClipFlowTheme
+    ) -> some View {
+        if model.isRecording {
+            Text(transcription.autoTranscribe && transcription.isConfigured ? "正在录音 · 完成后自动转写" : "正在录制麦克风声音")
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.muted)
+        } else if model.isPaused {
+            Text("已暂停，点继续恢复录音")
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.muted)
+        } else if case .transcribing = latestState {
+            HStack(spacing: 5) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("正在自动转写演讲人与字幕…")
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .foregroundStyle(theme.accent)
+            }
+        } else if case .failed = latestState {
+            Text("转写失败，点击查看重试")
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.danger)
+        } else if let latestTranscript {
+            Text("已转写 · \(latestTranscript.speakers.count) 位演讲人 · \(latestTranscript.segments.count) 条字幕")
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.accent)
+        } else if let latestURL {
+            Text(latestURL.deletingPathExtension().lastPathComponent)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.muted)
+        } else if transcription.autoTranscribe && transcription.isConfigured {
+            Text("录音完成后将自动转写字幕")
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(theme.muted)
+        }
     }
 
     private var primaryButtonTitle: String {
@@ -333,13 +423,6 @@ struct AudioRecorderWidget: View {
         if model.isRecording { return "pause.fill" }
         if model.isPaused { return "play.fill" }
         return "record.circle"
-    }
-
-    private var activityLabel: String? {
-        if model.isRecording { return "正在录制麦克风声音" }
-        if model.isPaused { return "已暂停，点继续恢复录音" }
-        if let url = model.latestRecordingURL { return url.lastPathComponent }
-        return nil
     }
 }
 

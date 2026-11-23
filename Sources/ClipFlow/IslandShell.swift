@@ -140,6 +140,7 @@ struct IslandRootView: View {
             || model.credentialDeleteConfirmationOpen
             || homeModel.memoLibraryOpen
             || homeModel.dailyReviewHistoryOpen
+            || homeModel.recordingWorkspaceOpen
             || (shell.destination == .vibehub && shell.vibeHubAgent.panel != .closed)
     }
 

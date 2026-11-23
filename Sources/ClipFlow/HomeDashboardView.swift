@@ -74,6 +74,7 @@ enum HomeWidgetRegistry {
 final class HomeDashboardModel: ObservableObject {
     // Keep recording alive when the dashboard is hidden or recreated during navigation.
     let audioRecorder = AudioRecorderModel()
+    let recordingTranscription = RecordingTranscriptionManager()
     let memoLibrary: MemoLibraryModel
     let dailyReview = DailyReviewModel()
 
@@ -133,6 +134,7 @@ final class HomeDashboardModel: ObservableObject {
     }
     @Published var memoLibraryOpen = false
     @Published var dailyReviewHistoryOpen = false
+    @Published var recordingWorkspaceOpen = false
 
     private enum Key {
         static let quickNote = "home.quickNote"
@@ -172,6 +174,15 @@ final class HomeDashboardModel: ObservableObject {
         editingWidget = nil
         mirrorPhotoURL = Self.existingMirrorPhotoURL()
         mirrorPhotoError = nil
+        recordingTranscription.canDeleteRecording = { [weak audioRecorder] url in
+            audioRecorder?.canDeleteRecording(url) ?? false
+        }
+        recordingTranscription.onRecordingDeleted = { [weak audioRecorder] url, latest in
+            audioRecorder?.recordingWasDeleted(url, latestRemaining: latest)
+        }
+        audioRecorder.onDidFinishRecording = { [weak self] url in
+            self?.recordingTranscription.handleNewRecording(url)
+        }
         if mirrorPhotoURL == nil {
             Task { await randomizeMirrorPhoto() }
         }
@@ -341,6 +352,12 @@ final class HomeDashboardModel: ObservableObject {
         memoLibraryOpen = false
     }
 
+    func closeRecordingWorkspace() {
+        recordingTranscription.playback.stop()
+        recordingTranscription.showingSettings = false
+        recordingWorkspaceOpen = false
+    }
+
     private static func mirrorDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("ClipFlow", isDirectory: true)
@@ -441,8 +458,24 @@ struct HomeDashboardView: View {
                 .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
             }
         }
+        .overlay {
+            if model.recordingWorkspaceOpen {
+                RecordingWorkspaceOverlay(
+                    transcription: model.recordingTranscription,
+                    onRevealRecording: { url in
+                        audioRecorderModel.onWillRevealRecording?()
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    },
+                    onClose: {
+                        model.closeRecordingWorkspace()
+                    }
+                )
+                .transition(FlowMotion.reveal(reduceMotion: reduceMotion))
+            }
+        }
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.memoLibraryOpen)
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.dailyReviewHistoryOpen)
+        .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.recordingWorkspaceOpen)
         .onReceive(NotificationCenter.default.publisher(for: .jaimoFocusQuickNote)) { _ in
             noteFocusRequest += 1
         }
@@ -731,7 +764,11 @@ struct HomeDashboardView: View {
                 editing: editingWidgets,
                 model: model
             ) {
-                AudioRecorderWidget(model: audioRecorderModel)
+                AudioRecorderWidget(
+                    model: audioRecorderModel,
+                    transcription: model.recordingTranscription,
+                    onOpenWorkspace: { model.recordingWorkspaceOpen = true }
+                )
             }
 
         case .camera:

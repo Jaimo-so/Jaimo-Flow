@@ -27,7 +27,11 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 
 所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
 
-> 当前版本：`0.9.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+> 当前版本：`0.10.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+
+## 0.10.0 版本更新
+
+升级录音转写，新增通义听悟风格的录音转写工作台，支持演讲人、时间轴字幕、同步播放、编辑及二次确认删除录音。配置服务后可选择录音结束自动转写或手动转写。完整变更与安装说明见 [0.10.0 发布说明](docs/releases/v0.10.0.md)。
 
 ## 0.9.0 版本更新
 
@@ -75,7 +79,7 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.10.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
@@ -85,7 +89,9 @@ shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
 - 将多个文件或文件夹拖到刘海可打开文件中转站；中转站保存独立本地副本，可再次拖出、定位、移除或二次确认清空
 - 首页包含时间、快速便签、多条备忘录、本地录音、镜子和最近使用应用；管理模式支持拖拽排序、隐藏、恢复，并可用尺寸菜单或右下角手柄调整尺寸档位
 - 备忘录支持多条内容、标题、正文、置顶和删除，不与快速便签或剪切板历史混存；备忘录和快速便签编辑期间只保留内存修改，关闭编辑界面、离开首页、隐藏窗口或正常退出时统一保存，备忘录列表内切换记录不会提前保存；保存失败保留编辑内容并支持重试
-- 录音支持开始、暂停、继续、完成、实时音量反馈和在访达中定位；M4A 文件只保存在本机 Application Support 目录
+- 录音支持开始、暂停、继续、完成、实时音量反馈和在访达中定位，M4A 保存在本机；可配置阿里云 Qwen3-ASR 或 OpenAI 兼容转写接口，设置自动或手动转写，长录音按服务要求分段处理
+- 录音转写工作台支持记录列表、演讲人筛选与重命名、字幕搜索与编辑、同步播放和变速，以及复制字幕、纯文本或 SRT；演讲人和时间戳能力取决于服务及模型，纯文本结果的时间轴为估算值
+- 在录音列表右键或详情区删除录音时须二次确认，将永久删除 M4A 和关联字幕 JSON、TXT；录制或暂停中的当前录音不可删除
 - 镜子支持 16:9 横图和手机竖图，组件宽高比跟随照片；正常状态只显示照片或水平镜像的本机实时画面，点击即可切换，照片管理位于右键菜单
 - 应用页扫描 `/Applications`、`/System/Applications` 和 `~/Applications`，支持搜索、收藏、启动和最近使用记录
 - 每 0.4 秒读取 `NSPasteboard.changeCount`，自动记录文字、代码、HTTP(S) 链接和图片
@@ -129,6 +135,14 @@ shasum -a 256 -c Jaimo-Flow-0.8.0-macOS-Apple-Silicon.dmg.sha256
 
 开机自动启动需要应用位于 `/Applications`。在 Jaimo Flow 偏好设置中开启相应选项即可。
 
+### 录音转写工作台
+
+在首页录音组件点击“转写记录”打开工作台，在“ASR 设置”中选择阿里云 Qwen3-ASR 或 OpenAI 兼容接口，填写接口地址、模型名称和 API Key 并保存。远程接口须使用 HTTPS，本机服务可使用 HTTP。自动转写默认开启：配置完成后，每次结束录音会自动发送音频给所配置的服务商；关闭该选项后可在工作台手动转写或重新转写，也可取消正在进行的任务。
+
+工作台左侧选择录音，右侧查看演讲人和时间轴字幕；可以播放、拖动进度、调整倍速、搜索和编辑字幕，修改演讲人名称或归属，并复制完整字幕、纯文本或 SRT。支持演讲人分离的模型可返回多个演讲人；没有此类信息的结果使用默认演讲人，纯文本结果的时间按文本比例估算。长录音会按服务要求分段请求并合并结果，个别片段仍可能因大小或服务限制失败。
+
+在左侧录音记录右键选择“删除录音”，或点击详情区的删除按钮，再次确认后会永久删除录音及关联 `.transcript.json`、`.txt` 文件；正在录制或暂停的当前录音不能删除。删除后将更新列表及首页录音状态；正在播放或转写的对应录音会停止播放或取消转写。
+
 ### Vibehub 话术库
 
 从顶部导航打开 Vibehub，点击“新建话术”，填写标题与完整话术原文。每条话术还可记录标签、适用场景和术语与含义；字段分别保存，不缩写原文、定义或意义。“复制话术”只复制完整话术原文，可直接发送给编程 Agent。
@@ -156,13 +170,15 @@ Vibehub 内置话术整理 Agent，使用自己配置的模型 API：
 
 Jaimo Flow 不自动上传剪贴板内容，不要求应用账户，也没有云同步。链接首版不抓取网页标题，避免让复制行为产生隐式网络请求。“检查更新”功能会访问本仓库的 GitHub Release API 和下载安装包。用户主动点击 Vibehub 的“整理并预览”时，该次输入的话术和整理规则会发送到用户配置的模型服务；完整话术库、备忘录和剪贴板历史不会附带发送。整理结果先在本机预览，确认保存后进入话术库，模型服务按用户自己的 API 账户处理请求。
 
+录音转写会将所选录音或其分段发送到用户配置的服务商；自动转写默认开启，配置好服务后完成录音即会发送，可在 ASR 设置中关闭。转写结果保存在本机录音目录，服务商如何处理音频取决于其服务政策。转写 API Key 保存在本机独立的 macOS 钥匙串服务中，接口地址和模型名称保存在本机偏好设置。
+
 为保证从旧版 ClipFlow 升级后不丢失记录，应用继续使用原有的内部应用标识 `com.clipflow.mac` 和数据目录：
 
 ```text
 ~/Library/Application Support/ClipFlow/
 ├── ClipFlow.sqlite3      # 剪贴板历史、提示词、应用启动记录等本机数据
 ├── Images/               # 剪切板图片
-├── Recordings/           # 用户主动创建的 M4A 录音
+├── Recordings/           # M4A 录音及关联的转写 JSON、TXT
 ├── Memos/memos.json      # 多条备忘录
 ├── VibeHub/phrases.json  # Vibe Coding 话术、分类与笔记
 ├── Mirror/               # 镜子未打开时显示的封面照片
@@ -213,11 +229,12 @@ API Key 分组的内容保存在 macOS 钥匙串中，不写入上述 SQLite 数
 ./Scripts/run-memo-self-test.sh
 ./Scripts/run-vibehub-self-test.sh
 ./Scripts/run-vibehub-agent-self-test.sh
+./Scripts/run-recording-asr-self-test.sh
 ```
 
 API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完成后删除测试条目，不操作用户保存的密钥。
 
-备忘录自检验证备忘录与快速便签编辑、停顿和切换记录期间不保存，关闭时保存最新完整内容，保存失败后保留内容并重试，以及创建、重复调用和存储兼容行为。Vibehub 自检验证分类、搜索、长文保存和复制；Agent 自检使用模拟模型响应，验证接口配置、可编辑预览、关闭清空、手动保存和失败重试，不调用真实模型服务。
+备忘录自检验证备忘录与快速便签编辑、停顿和切换记录期间不保存，关闭时保存最新完整内容，保存失败后保留内容并重试，以及创建、重复调用和存储兼容行为。Vibehub 自检验证分类、搜索、长文保存和复制；Agent 自检使用模拟模型响应，验证接口配置、可编辑预览、关闭清空、手动保存和失败重试，不调用真实模型服务。录音转写自检覆盖接口请求与解析、分段、字幕存取及删除联动，使用临时目录和独立偏好，不访问真实录音或钥匙串。
 
 生成可下载的 macOS 安装镜像：
 
@@ -253,17 +270,18 @@ CLIPFLOW_SIGN_IDENTITY="Developer ID Application: 你的名称 (TEAMID)" ./Scrip
 ## 项目结构
 
 ```text
-Sources/ClipFlow/          macOS 主应用、界面、剪贴板监听和更新管理
+Sources/ClipFlow/          macOS 主应用、界面、剪贴板监听、录音转写工作台和更新管理
 Sources/ClipFlowKit/       数据模型、分类、SQLite 存储和 Release 解析
 Sources/ClipFlowUpdater/   独立更新助手，负责安全替换与失败回滚
 Sources/CSQLite/           SQLite 系统库桥接
 Tests/ClipFlowSelfTest/    可直接运行的核心自检
+Tests/RecordingASRSelfTest/  录音转写请求、字幕、分段与删除自检
 Tests/ClipFlowMemoSelfTest/  备忘录创建、存储兼容与重复调用自检
 Tests/ClipFlowVibeHubSelfTest/  话术库分类、保存、搜索与复制自检
 Tests/ClipFlowVibeHubAgentSelfTest/  模型接口、预览确认与关闭清空自检
 Resources/                 Info.plist、原始 Logo 和 AppIcon.icns
 docs/images/               README 产品展示图与真实界面截图
-Scripts/                   图标生成、应用构建和 DMG 打包脚本
+Scripts/                   图标生成、应用构建、各项自检和 DMG 打包脚本
 DESIGN.md                  当前工具站设计语言
 jaimo-island-handoff-spec.md  工具站早期交互方案与设计演进记录
 clipflow-app.html          旧版剪贴板交互原型
