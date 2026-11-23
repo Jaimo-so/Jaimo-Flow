@@ -403,6 +403,9 @@ private struct HistoryListView: View {
                                         model.selectedID = item.id
                                         model.focusArea = .other
                                     }
+                                    .contextMenu {
+                                        clipboardContextMenu(for: item)
+                                    }
                                     .id(item.id)
                                 }
                             }
@@ -422,6 +425,47 @@ private struct HistoryListView: View {
         .focusable(false)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("剪贴板历史记录")
+    }
+
+    @ViewBuilder
+    private func clipboardContextMenu(for item: ClipItem) -> some View {
+        Button("复制到剪贴板") {
+            model.selectedID = item.id
+            model.copySelected()
+        }
+        if item.kind == .image {
+            Button("另存为…") {
+                model.selectedID = item.id
+                model.beginSaveSelectedImage()
+            }
+            Button("在访达中显示") {
+                model.selectedID = item.id
+                model.revealSelectedImage()
+            }
+            Button("复制文件") {
+                model.selectedID = item.id
+                model.copySelectedImageFile()
+            }
+            Button("打开图片") {
+                model.selectedID = item.id
+                model.openSelectedImage()
+            }
+        }
+        Button(item.isFavorite ? "取消收藏" : "收藏") {
+            model.selectedID = item.id
+            model.toggleFavorite()
+        }
+        if item.kind != .image {
+            Button("保存为提示词") {
+                model.selectedID = item.id
+                model.beginCreatePrompt(prefillFromSelection: true)
+            }
+        }
+        Divider()
+        Button("删除", role: .destructive) {
+            model.selectedID = item.id
+            model.deleteSelected()
+        }
     }
 
     private var emptyState: some View {
@@ -572,7 +616,11 @@ private struct PreviewView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.5), radius: 12, y: 8)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture(count: 2) { model.openSelectedImage() }
+                        .help("双击打开图片")
                         .accessibilityLabel(item.imageAlt ?? item.title)
+                        .accessibilityHint("双击打开图片")
                 } else {
                     ProgressiveTextView(
                         text: item.fullText ?? item.title,
@@ -636,17 +684,59 @@ private struct PreviewView: View {
             .accessibilityLabel(model.selectedItem?.isFavorite == true ? "取消收藏" : "收藏")
             .help(model.selectedItem?.isFavorite == true ? "取消收藏（⌘S）" : "收藏（⌘S）")
 
-            Button {
-                model.beginCreatePrompt(prefillFromSelection: true)
-            } label: {
-                Image(systemName: "text.badge.plus")
-                    .accessibilityHidden(true)
+            if model.selectedItem?.kind != .image {
+                Button {
+                    model.beginCreatePrompt(prefillFromSelection: true)
+                } label: {
+                    Image(systemName: "text.badge.plus")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .disabled(model.selectedItem == nil)
+                .accessibilityLabel("保存为提示词")
+                .help("保存为提示词")
             }
-            .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
-            .frame(width: 26, height: 26)
-            .disabled(model.selectedItem == nil || model.selectedItem?.kind == .image)
-            .accessibilityLabel("保存为提示词")
-            .help("保存为提示词")
+
+            if model.selectedItem?.kind == .image {
+                Button(action: model.beginSaveSelectedImage) {
+                    Image(systemName: "square.and.arrow.down")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .accessibilityLabel("另存为图片")
+                .help("另存为（⌘⇧S）")
+
+                Button(action: model.revealSelectedImage) {
+                    Image(systemName: "folder")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .accessibilityLabel("在访达中显示")
+                .help("在访达中显示")
+
+                Button(action: model.copySelectedImageFile) {
+                    Image(systemName: "doc.on.doc")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .accessibilityLabel("复制文件")
+                .help("复制文件，可粘贴到访达或其他应用")
+
+                Button(action: model.openSelectedImage) {
+                    Image(systemName: "arrow.up.forward.app")
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(GlassButtonStyle(kind: .normal, horizontalPadding: 0))
+                .frame(width: 26, height: 26)
+                .keyboardShortcut("o", modifiers: [.command])
+                .accessibilityLabel("打开图片")
+                .help("打开图片（⌘O）")
+            }
 
             Button(action: model.deleteSelected) {
                 Image(systemName: "trash")
