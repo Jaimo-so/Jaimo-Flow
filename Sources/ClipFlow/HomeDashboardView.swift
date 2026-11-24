@@ -1,4 +1,5 @@
 import AppKit
+import ClipFlowKit
 import ImageIO
 @preconcurrency import AVFoundation
 import SwiftUI
@@ -122,6 +123,12 @@ final class HomeDashboardModel: ObservableObject {
         }
     }
     @Published private(set) var quickNoteSaveStatus: QuickNoteSaveStatus = .saved
+    /// Bumped whenever the model replaces the quick note (clear / undo / convert).
+    @Published private(set) var quickNoteReplaceRequest = 0
+    @Published private(set) var quickNoteNotice: String?
+    @Published private(set) var canUndoQuickNoteClear = false
+    private var quickNoteUndo = QuickNoteUndoBuffer()
+    private var quickNoteNoticeToken = 0
     @Published private(set) var widgetOrder: [WidgetID]
     @Published private(set) var hiddenWidgets: Set<WidgetID>
     @Published private(set) var widgetSizes: [WidgetID: HomeWidgetSize]
@@ -338,6 +345,69 @@ final class HomeDashboardModel: ObservableObject {
         defaults.set(value, forKey: Key.quickNote)
         quickNoteSaveStatus = defaults.string(forKey: Key.quickNote) == value ? .saved : .failed
         return quickNoteSaveStatus == .saved
+    }
+
+    /// Clears the quick note but keeps one undo step for a few seconds.
+    func clearQuickNote(notice: String = "已清空便签") {
+        guard !quickNote.isEmpty else { return }
+        quickNoteUndo.recordClear(of: quickNote)
+        canUndoQuickNoteClear = quickNoteUndo.canUndo
+        replaceQuickNote(with: "")
+        showQuickNoteNotice(notice)
+    }
+
+    func undoQuickNoteClear() {
+        guard let restored = quickNoteUndo.restore(into: quickNote) else { return }
+        canUndoQuickNoteClear = false
+        replaceQuickNote(with: restored)
+        showQuickNoteNotice("已恢复便签", keepsUndo: false)
+    }
+
+    /// Saves the quick note as a new memo (first line as title), opens it in the
+    /// memo library and clears the quick note with an undo step.
+    @discardableResult
+    func convertQuickNoteToMemo() -> Bool {
+        guard let draft = QuickNoteActions.memoDraft(from: quickNote) else {
+            showQuickNoteNotice("便签只有空白，无需转为备忘录")
+            return false
+        }
+        do {
+            let id = try memoLibrary.createMemo(id: UUID(), title: draft.title, body: draft.body)
+            guard memoLibrary.flush() else {
+                showQuickNoteNotice("备忘录保存失败，便签内容已保留", keepsUndo: false)
+                return false
+            }
+            memoLibrary.selectedID = id
+        } catch {
+            showQuickNoteNotice("无法转为备忘录，便签内容已保留", keepsUndo: false)
+            return false
+        }
+        clearQuickNote(notice: "已转为备忘录「\(draft.title)」")
+        memoLibraryOpen = true
+        return true
+    }
+
+    func showQuickNoteNotice(_ text: String, keepsUndo: Bool = true) {
+        if !keepsUndo {
+            quickNoteUndo.discard()
+            canUndoQuickNoteClear = false
+        }
+        quickNoteNotice = text
+        quickNoteNoticeToken += 1
+        let token = quickNoteNoticeToken
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, self.quickNoteNoticeToken == token else { return }
+            self.quickNoteNotice = nil
+            self.quickNoteUndo.discard()
+            self.canUndoQuickNoteClear = false
+        }
+    }
+
+    private func replaceQuickNote(with text: String) {
+        quickNote = text
+        quickNoteReplaceRequest += 1
+        flushQuickNote()
     }
 
     @discardableResult
@@ -600,6 +670,60 @@ struct HomeDashboardView: View {
         return "晚上好"
     }
 
+    private func quickNoteActionBar(theme: ClipFlowTheme) -> some View {
+        let isEmpty = model.quickNote.isEmpty
+        return HStack(spacing: 4) {
+            if let notice = model.quickNoteNotice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if model.canUndoQuickNoteClear {
+                    Button("撤销") { model.undoQuickNoteClear() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.foreground)
+                        .help("恢复刚才清空的便签内容（已创建的备忘录会保留）")
+                        .accessibilityLabel("撤销清空便签")
+                }
+            }
+            Spacer(minLength: 4)
+            Button {
+                let text = model.quickNote.trimmingCharacters(in: .whitespacesAndNewlines)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                model.showQuickNoteNotice("已复制 \(QuickNoteActions.characterCount(text)) 字")
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(FlowIconButtonStyle())
+            .disabled(isEmpty)
+            .help("复制便签全文")
+            .accessibilityLabel("复制便签")
+
+            Button {
+                model.convertQuickNoteToMemo()
+            } label: {
+                Image(systemName: "note.text.badge.plus")
+            }
+            .buttonStyle(FlowIconButtonStyle())
+            .disabled(isEmpty)
+            .help("转为备忘录：首行作为标题，保存后清空便签（可撤销）")
+            .accessibilityLabel("转为备忘录")
+
+            Button {
+                model.clearQuickNote()
+            } label: {
+                Image(systemName: "eraser")
+            }
+            .buttonStyle(FlowIconButtonStyle())
+            .disabled(model.quickNote.isEmpty)
+            .help("清空便签（6 秒内可撤销）")
+            .accessibilityLabel("清空便签")
+        }
+    }
+
     private func restoreBar(_ theme: ClipFlowTheme) -> some View {
         HStack(spacing: 8) {
             Text("已隐藏")
@@ -665,7 +789,7 @@ struct HomeDashboardView: View {
                 editing: editingWidgets,
                 model: model
             ) {
-                NoteTextEditor(text: $model.quickNote, fontSize: 12, foreground: theme.foregroundSecondary, identifier: "jaimo.quickNote.editor", focusRequest: noteFocusRequest)
+                NoteTextEditor(text: $model.quickNote, fontSize: 12, foreground: theme.foregroundSecondary, identifier: "jaimo.quickNote.editor", focusRequest: noteFocusRequest, replaceRequest: model.quickNoteReplaceRequest)
                     .overlay(alignment: .topLeading) {
                         if model.quickNote.isEmpty {
                             Text("记下稍后要处理的事…")
@@ -681,6 +805,7 @@ struct HomeDashboardView: View {
                     Button("重试保存") { model.flushQuickNote() }
                         .buttonStyle(GlassButtonStyle(kind: .normal))
                 }
+                quickNoteActionBar(theme: theme)
             }
 
         case .memo:

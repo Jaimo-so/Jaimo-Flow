@@ -214,7 +214,32 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+    // Quick note → memo / copy / clear-undo rules.
+    let plainDraft = QuickNoteActions.memoDraft(from: "\n  周五前回复设计稿\n\n- 颜色再确认\n- 导出 2x  \n")
+    try require(plainDraft == .init(title: "周五前回复设计稿", body: "- 颜色再确认\n- 导出 2x"), "便签首行应成为备忘录标题，其余为正文")
+    let markedDraft = QuickNoteActions.memoDraft(from: "- [ ] 买咖啡豆\n顺便取快递")
+    try require(markedDraft?.title == "买咖啡豆", "便签标题应去掉列表与复选框标记")
+    try require(markedDraft?.body == "- [ ] 买咖啡豆\n顺便取快递", "标题被改写时正文应保留完整便签")
+    try require(QuickNoteActions.normalizedTitleLine("## 1. 发布清单") == "发布清单", "标题应去掉标题与序号标记")
+    try require(QuickNoteActions.normalizedTitleLine("1.5 倍速播放") == "1.5 倍速播放", "小数开头不应被当成序号")
+    try require(QuickNoteActions.normalizedTitleLine("2026.11 计划") == "2026.11 计划", "年份开头不应被当成序号")
+    let longLine = String(repeating: "长", count: 40)
+    let longDraft = QuickNoteActions.memoDraft(from: longLine + "\n第二行")
+    try require(longDraft?.title == String(repeating: "长", count: 29) + "…", "过长首行应截断为 30 字以内")
+    try require(longDraft?.body == longLine + "\n第二行", "标题被截断时正文应保留完整便签")
+    try require(QuickNoteActions.memoDraft(from: " \n\t\n") == nil, "空白便签不应转为备忘录")
+    try require(QuickNoteActions.memoDraft(from: "-\n只有正文")?.title == QuickNoteActions.defaultFallbackTitle, "首行只有标记时应使用默认标题")
+    try require(QuickNoteActions.characterCount("你好 world\n🙂 ") == 8, "便签字数应忽略空白并按字符计数")
+    var undoBuffer = QuickNoteUndoBuffer()
+    undoBuffer.recordClear(of: "   ")
+    try require(!undoBuffer.canUndo, "清空空白便签不应产生撤销")
+    undoBuffer.recordClear(of: "原便签")
+    try require(undoBuffer.restore(into: "") == "原便签", "撤销清空应恢复原便签")
+    try require(!undoBuffer.canUndo, "撤销只能使用一次")
+    undoBuffer.recordClear(of: "原便签")
+    try require(undoBuffer.restore(into: "新输入\n") == "新输入\n\n原便签", "清空后已有新输入时，撤销应追加而不是覆盖")
+
+    print("Jaimo Flow self-test passed: 44 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)
