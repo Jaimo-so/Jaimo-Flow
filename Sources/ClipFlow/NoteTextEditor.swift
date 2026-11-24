@@ -9,6 +9,9 @@ struct NoteTextEditor: NSViewRepresentable {
     var foreground: Color
     var identifier: String
     var focusRequest: Int = 0
+    /// Bump to push an external replacement (clear / undo) into the editor even
+    /// while it has focus. Typing never bumps this, so IME buffers stay intact.
+    var replaceRequest: Int = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -37,6 +40,7 @@ struct NoteTextEditor: NSViewRepresentable {
         textView.textColor = NSColor(foreground)
         textView.string = text
         textView.delegate = context.coordinator
+        context.coordinator.replaceRequest = replaceRequest
         scrollView.documentView = textView
         return scrollView
     }
@@ -49,6 +53,14 @@ struct NoteTextEditor: NSViewRepresentable {
             context.coordinator.focusRequest = focusRequest
         }
         textView.textColor = NSColor(foreground)
+        if replaceRequest != context.coordinator.replaceRequest, !textView.hasMarkedText() {
+            context.coordinator.replaceRequest = replaceRequest
+            if textView.string != text {
+                textView.string = text
+                textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            }
+            return
+        }
         // A parent refresh must not replace an active input method's buffer.
         // Once focus leaves, the binding is the source for external changes.
         guard !textView.hasMarkedText(), textView.window?.firstResponder !== textView,
@@ -59,6 +71,7 @@ struct NoteTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
         var focusRequest = 0
+        var replaceRequest = 0
 
         init(text: Binding<String>) {
             self.text = text
