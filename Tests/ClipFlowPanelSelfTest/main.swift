@@ -65,14 +65,18 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     let hiddenMenu = TopNotchGeometry.frame(screen: screenRect, visible: screenRect)
     try require(hiddenMenu.height == 24 && hiddenMenu.midX == 720, "自动隐藏菜单栏时入口消失")
     let hardware = TopNotchGeometry.frame(screen: screenRect, visible: screenRect, safeAreaTop: 38, hardwareWidth: 200)
-    try require(hardware.height == 38 && hardware.width >= 200, "物理刘海屏幕未适配安全区")
+    let hardwareWithItems = TopNotchGeometry.frame(screen: screenRect, visible: screenRect, safeAreaTop: 38, hardwareWidth: 200, hasItems: true)
+    try require(hardware.height == 38 && hardware.width == 264 && hardware.midX == 720, "物理刘海空态耳翼几何错误")
+    try require(hardwareWithItems.width == 320 && hardwareWithItems.midX == hardware.midX, "物理刘海非空态未为徽标预留耳翼")
+    let airWithItems = TopNotchGeometry.frame(screen: screenRect, visible: screenRect, hasItems: true)
+    try require(hiddenMenu.width == 164 && airWithItems.width == 224, "无物理刘海的空态或徽标宽度错误")
     let offset = TopNotchGeometry.frame(screen: NSRect(x: -1440, y: 200, width: 1440, height: 900),
                                        visible: NSRect(x: -1440, y: 200, width: 1440, height: 875))
     try require(offset.midX == -720 && offset.maxY == 1100, "多屏坐标导致入口偏移")
 
     controller.hide()
     finishWindowAnimation(controller.panel)
-    let notch = TopNotchController(panelController: controller, relayModel: FileRelayModel(rootURL: directory.appendingPathComponent("Relay")),
+    let notch = TopNotchController(panelController: controller, relayModel: FileRelayModel(rootURL: directory.appendingPathComponent("Relay"), defaults: defaults),
                                    defaults: defaults, monitorsPointer: false)
     controller.onVisibilityChanged = { [weak notch] in notch?.workspaceVisibilityChanged($0) }
     defer {
@@ -141,12 +145,85 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
                 "快速收起重开被旧动画关闭或丢失输入")
     try require(controller.panel.frame.size == sizeBefore, "展开动画改变了工作区尺寸")
 
+    let sourceA = directory.appendingPathComponent("source-a.txt")
+    let sourceB = directory.appendingPathComponent("source-b.txt")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("原始 A".utf8).write(to: sourceA)
+    try Data("原始 B".utf8).write(to: sourceB)
+    try require(!notch.relayModel.removeAfterDrag, "拖出后移除默认应关闭")
+    notch.relayModel.add(urls: [sourceA, directory.appendingPathComponent("不存在")])
+    notch.relayModel.add(urls: [sourceB])
+    let importDeadline = Date().addingTimeInterval(5)
+    while (notch.relayModel.isImporting || notch.relayModel.items.count < 2) && Date() < importDeadline {
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    try require(notch.relayModel.items.count == 2, "连续导入丢失文件或单项失败影响其他文件")
+    try require(notch.relayModel.errorMessage != nil, "连续导入掩盖了失败反馈")
+    try Data("修改后的原件".utf8).write(to: sourceA)
+    let itemA = notch.relayModel.items.first { $0.originalName == sourceA.lastPathComponent }!
+    let copiedA = try String(contentsOf: notch.relayModel.storedURL(for: itemA), encoding: .utf8)
+    try require(copiedA == "原始 A", "中转文件不是独立副本")
+    try require(FileRelayModel(rootURL: directory.appendingPathComponent("Relay"), defaults: defaults).items.count == 2, "索引未持久化")
+    controller.hide()
+    finishWindowAnimation(controller.panel)
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let badgePoint = NSPoint(x: notch.notchPanel.frame.maxX - 15, y: notch.notchPanel.frame.midY)
+    // Moving from the body to the badge before the hover timer fires must use the latest point.
+    notch.handlePointer(at: inside)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    notch.handlePointer(at: badgePoint)
+    try await Task.sleep(nanoseconds: 200_000_000)
+    try require(notch.relayPanel.isVisible && !controller.isVisible, "悬停期间移至徽标未打开小兜")
+    notch.handleEscape()
+    try await Task.sleep(nanoseconds: 300_000_000)
+    notch.handleNotchClick(at: badgePoint)
+    try require(notch.relayPanel.isVisible && !controller.isVisible, "点击徽标未打开小兜")
+    notch.handleEscape()
+    try await Task.sleep(nanoseconds: 300_000_000)
+
+    let baseline = NSPasteboard(name: .drag).changeCount
+    notch.handlePointerEvent(type: .leftMouseUp, at: outside, dragChangeCount: baseline, hasFileURL: true)
+    notch.handlePointerEvent(type: .leftMouseDragged, at: inside, dragChangeCount: baseline, hasFileURL: true)
+    try require(!notch.relayModel.isDropTargeted && !notch.relayPanel.isVisible, "残留拖拽剪贴板误触发小兜")
+    notch.handlePointerEvent(type: .leftMouseDragged, at: inside, dragChangeCount: baseline + 1, hasFileURL: false)
+    try require(!notch.relayModel.isDropTargeted && !notch.relayPanel.isVisible, "非文件拖拽误触发小兜")
+    notch.relayModel.isDraggingOut = true
+    notch.handlePointerEvent(type: .leftMouseDragged, at: inside, dragChangeCount: baseline + 1, hasFileURL: true)
+    try require(!notch.relayModel.isDropTargeted && !notch.relayPanel.isVisible, "拖出文件误触发拖入落区")
+    notch.relayModel.isDraggingOut = false
+    notch.handlePointerEvent(type: .leftMouseDragged, at: inside, dragChangeCount: baseline + 1, hasFileURL: true)
+    try require(notch.relayPanel.isVisible && notch.relayModel.isDropTargeted, "文件拖近刘海未张开小兜")
+    notch.handleFileDrag(at: outside, hasFiles: true)
+    try await Task.sleep(nanoseconds: 300_000_000)
+    try require(!notch.relayPanel.isVisible, "拖离小兜未收起")
+
     notch.showRelay()
     try await Task.sleep(nanoseconds: 300_000_000)
     try require(notch.relayPanel.isVisible && !controller.isVisible, "文件中转面板与工具站状态冲突")
+    if let screen = notch.relayPanel.screen {
+        try require(abs(notch.relayPanel.frame.maxY - TopNotchGeometry.workspaceTop(on: screen)) <= 1, "小兜未贴合刘海下沿")
+        try require(notch.relayPanel.frame.height <= 97, "小兜高度超出紧凑形态")
+    }
     notch.handlePointer(at: NSPoint(x: notch.relayPanel.frame.midX, y: notch.relayPanel.frame.midY))
     try await Task.sleep(nanoseconds: 400_000_000)
     try require(notch.relayPanel.isVisible, "文件中转面板内操作误收起")
+    notch.relayModel.isPinned = true
+    notch.handlePointerEvent(type: .leftMouseDown, at: outside, dragChangeCount: baseline, hasFileURL: false)
+    try require(notch.relayPanel.isVisible, "固定时外部点击关闭小兜")
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(notch.relayPanel.isVisible, "固定时小兜被自动收起")
+    notch.relayModel.isPinned = false
+    notch.relayModel.isDraggingOut = true
+    notch.handlePointer(at: outside)
+    try await Task.sleep(nanoseconds: 400_000_000)
+    try require(notch.relayPanel.isVisible, "拖出期间小兜被自动收起")
+    notch.relayModel.isDraggingOut = false
+    notch.handleEscape()
+    try await Task.sleep(nanoseconds: 300_000_000)
+    try require(!notch.relayPanel.isVisible, "Escape 未收起小兜")
+    notch.showRelay()
     notch.handlePointer(at: outside)
     try await Task.sleep(nanoseconds: 600_000_000)
     try require(!notch.relayPanel.isVisible, "移出中转面板后未收起")

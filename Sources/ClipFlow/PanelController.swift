@@ -19,7 +19,7 @@ final class ClipFlowHostingView<Content: View>: NSHostingView<Content> {
 final class PanelController: NSObject, NSWindowDelegate {
     let panel: ClipFlowPanel
     private let model: AppModel
-    private let preferences: PreferencesStore
+    let preferences: PreferencesStore
     private let shellModel: IslandShellModel
     private let homeModel: HomeDashboardModel
     private let applicationsModel: ApplicationsModel

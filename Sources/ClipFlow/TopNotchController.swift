@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+import Combine
 
 final class TopNotchPanel: NSPanel {
     override var canBecomeKey: Bool { false }
@@ -13,13 +14,13 @@ final class FileRelayPanel: NSPanel {
 }
 
 enum TopNotchGeometry {
-    static func frame(screen: NSRect, visible: NSRect, safeAreaTop: CGFloat = 0, hardwareWidth: CGFloat = 0) -> NSRect {
+    static func frame(screen: NSRect, visible: NSRect, safeAreaTop: CGFloat = 0, hardwareWidth: CGFloat = 0, hasItems: Bool = false) -> NSRect {
         let height = max(24, safeAreaTop, screen.maxY - visible.maxY)
-        let width = min(max(164, hardwareWidth + 16), screen.width)
+        let width = min(hardwareWidth > 0 ? max(164, hardwareWidth + (hasItems ? 120 : 64)) : (hasItems ? 224 : 164), screen.width)
         return NSRect(x: screen.midX - width / 2, y: screen.maxY - height, width: width, height: height)
     }
 
-    static func frame(on screen: NSScreen) -> NSRect {
+    static func frame(on screen: NSScreen, hasItems: Bool = false) -> NSRect {
         let hardwareWidth: CGFloat
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
             hardwareWidth = max(0, right.minX - left.maxX)
@@ -27,7 +28,7 @@ enum TopNotchGeometry {
             hardwareWidth = 0
         }
         return frame(screen: screen.frame, visible: screen.visibleFrame,
-                     safeAreaTop: screen.safeAreaInsets.top, hardwareWidth: hardwareWidth)
+                     safeAreaTop: screen.safeAreaInsets.top, hardwareWidth: hardwareWidth, hasItems: hasItems)
     }
 
     static func workspaceTop(on screen: NSScreen) -> CGFloat {
@@ -38,6 +39,7 @@ enum TopNotchGeometry {
 @MainActor
 private final class TopNotchAppearance: ObservableObject {
     @Published var expanded = false
+    @Published var hardwareWidth: CGFloat = 0
 }
 
 @MainActor
@@ -58,8 +60,13 @@ final class TopNotchController: NSObject {
     private var relayGeneration = 0
     private var requiresPointerExit = false
     private var isDraggingFiles = false
+    private var dragOpenedRelay = false
     private var contextMenuOpen = false
     private var running = false
+    private var idleDragChangeCount: Int
+    private var lastPointerLocation = NSPoint.zero
+    private var itemsObserver: AnyCancellable?
+    private var dragOutObserver: AnyCancellable?
 
     var isEnabled: Bool {
         get { defaults.object(forKey: "topNotch.isEnabled") as? Bool ?? true }
@@ -74,13 +81,21 @@ final class TopNotchController: NSObject {
         self.panelController = panelController
         self.relayModel = relayModel ?? FileRelayModel()
         self.defaults = defaults
+        idleDragChangeCount = NSPasteboard(name: .drag).changeCount
         notchPanel = TopNotchPanel(contentRect: NSRect(x: 0, y: 0, width: 164, height: 24),
                                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        relayPanel = FileRelayPanel(contentRect: NSRect(x: 0, y: 0, width: 370, height: 430),
+        relayPanel = FileRelayPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 96),
                                    styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
                                    backing: .buffered, defer: false)
         super.init()
         configurePanels()
+        itemsObserver = self.relayModel.$items.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.refreshPosition() }
+        }
+        dragOutObserver = self.relayModel.$isDraggingOut.dropFirst().sink { [weak self] draggingOut in
+            guard let self, !draggingOut else { return }
+            self.idleDragChangeCount = NSPasteboard(name: .drag).changeCount
+        }
         if monitorsPointer { installPointerMonitors() }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -147,29 +162,49 @@ final class TopNotchController: NSObject {
         notchPanel.hasShadow = false
         let hosting = TopNotchHostingView(rootView: TopNotchView(model: relayModel, appearance: appearance))
         hosting.onPointerChanged = { [weak self] in self?.handlePointer(at: NSEvent.mouseLocation) }
-        hosting.onClick = { [weak self] in self?.openWorkspace() }
+        hosting.onClick = { [weak self] in self?.handleNotchClick(at: NSEvent.mouseLocation) }
         hosting.onRightClick = { [weak self] event in self?.showContextMenu(for: event) }
+        hosting.canAcceptDrop = { [weak self] in self?.relayModel.isDraggingOut == false }
         hosting.onFileDropTargetChanged = { [weak self] targeted in
             guard let self else { return }
-            self.isDraggingFiles = targeted
-            self.relayModel.isDropTargeted = targeted
+            let active = targeted && !self.relayModel.isDraggingOut
+            self.isDraggingFiles = active
+            self.relayModel.isDropTargeted = active
             self.cancelPendingTransitions()
+            if active && !self.relayPresented {
+                self.dragOpenedRelay = true
+                self.showRelay()
+            }
         }
         hosting.onFileDrop = { [weak self] urls in
             self?.relayModel.add(urls: urls)
+            self?.finishIncomingDrop()
             self?.showRelay()
         }
         notchPanel.contentView = hosting
 
-        relayPanel.level = .floating
+        relayPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         relayPanel.hasShadow = true
-        let relay = NSHostingView(rootView: FileRelayPanelView(model: relayModel, onOpenWorkspace: { [weak self] in
-            self?.openWorkspace()
-        }))
-        relay.wantsLayer = true
-        relay.layer?.cornerRadius = 18
-        relay.layer?.cornerCurve = .continuous
-        relay.layer?.masksToBounds = true
+        let relay = RelayHostingView(rootView: FileRelayAppearanceView(
+            preferences: panelController.preferences,
+            model: relayModel,
+            onContextMenuChanged: { [weak self] open in
+                guard let self else { return }
+                self.contextMenuOpen = open
+                self.cancelPendingTransitions()
+                if !open { self.handlePointer(at: NSEvent.mouseLocation) }
+            }
+        ))
+        relay.onDropTarget = { [weak self] targeted in
+            guard let self else { return }
+            self.isDraggingFiles = targeted && !self.relayModel.isDraggingOut
+            self.relayModel.isDropTargeted = targeted && !self.relayModel.isDraggingOut
+        }
+        relay.canAcceptDrop = { [weak self] in self?.relayModel.isDraggingOut == false }
+        relay.onDrop = { [weak self] urls in
+            self?.relayModel.add(urls: urls)
+            self?.finishIncomingDrop()
+        }
         relayPanel.contentView = relay
     }
 
@@ -182,22 +217,83 @@ final class TopNotchController: NSObject {
             return CGDisplayIsBuiltin(number.uint32Value) != 0
         } ?? NSScreen.screens.first
         guard let screen else { return }
-        notchPanel.setFrame(TopNotchGeometry.frame(on: screen), display: true)
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            appearance.hardwareWidth = max(0, right.minX - left.maxX)
+        } else { appearance.hardwareWidth = 0 }
+        notchPanel.setFrame(TopNotchGeometry.frame(on: screen, hasItems: !relayModel.items.isEmpty), display: true)
         if relayPresented { positionRelay(on: screen) }
     }
 
     private func installPointerMonitors() {
-        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .leftMouseUp, .rightMouseUp]
-        globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handlePointer(at: NSEvent.mouseLocation) }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .leftMouseUp, .rightMouseUp, .leftMouseDown, .keyDown]
+        globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleEvent(event) }
         }
         localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            MainActor.assumeIsolated { self?.handlePointer(at: NSEvent.mouseLocation) }
+            if event.type == .keyDown && event.keyCode == 53, self?.relayPresented == true {
+                self?.handleEscape()
+                return nil
+            }
+            MainActor.assumeIsolated { self?.handleEvent(event) }
             return event
         }
     }
 
+    func handleEscape() { hideRelay() }
+
+    func handleNotchClick(at point: NSPoint) {
+        if isOverBadge(point) { showRelay() } else { openWorkspace() }
+    }
+
+    private func isOverBadge(_ point: NSPoint) -> Bool {
+        !relayModel.items.isEmpty && point.x >= notchPanel.frame.maxX - 60 && notchPanel.frame.contains(point)
+    }
+
+    func handleFileDrag(at point: NSPoint, hasFiles: Bool) {
+        guard running, isEnabled, !relayModel.isDraggingOut else { return }
+        let zone = notchPanel.frame.insetBy(dx: -24, dy: -20)
+        if hasFiles && zone.contains(point) {
+            relayModel.isDropTargeted = true
+            dragOpenedRelay = true
+            if !relayPresented { showRelay() }
+        } else if dragOpenedRelay && !relayPanel.frame.insetBy(dx: -6, dy: -6).contains(point) {
+            relayModel.isDropTargeted = false
+            dragOpenedRelay = false
+            if !relayModel.isPinned && !relayModel.isDraggingOut { hideRelay() }
+        }
+    }
+
+    private func finishIncomingDrop() {
+        dragOpenedRelay = false
+        isDraggingFiles = false
+        relayModel.isDropTargeted = false
+        idleDragChangeCount = NSPasteboard(name: .drag).changeCount
+    }
+
+    private func handleEvent(_ event: NSEvent) {
+        let pasteboard = NSPasteboard(name: .drag)
+        handlePointerEvent(type: event.type, at: NSEvent.mouseLocation,
+                           dragChangeCount: pasteboard.changeCount,
+                           hasFileURL: pasteboard.availableType(from: [.fileURL]) != nil)
+    }
+
+    func handlePointerEvent(type: NSEvent.EventType, at point: NSPoint, dragChangeCount: Int, hasFileURL: Bool) {
+        if type == .leftMouseDragged {
+            let incoming = !relayModel.isDraggingOut && dragChangeCount != idleDragChangeCount && hasFileURL
+            handleFileDrag(at: point, hasFiles: incoming)
+        } else if type == .leftMouseUp {
+            dragOpenedRelay = false
+            relayModel.isDropTargeted = false
+            isDraggingFiles = false
+            idleDragChangeCount = dragChangeCount
+        } else if type == .leftMouseDown && relayPresented && !relayModel.isPinned && !relayPanel.frame.contains(point) && !notchPanel.frame.contains(point) {
+            hideRelay()
+        }
+        handlePointer(at: point)
+    }
+
     func handlePointer(at point: NSPoint) {
+        lastPointerLocation = point
         guard running, isEnabled, !contextMenuOpen, !isDraggingFiles else { return }
         let overNotch = notchPanel.frame.contains(point)
         if !overNotch { requiresPointerExit = false }
@@ -212,7 +308,8 @@ final class TopNotchController: NSObject {
                pendingOpen == nil, NSEvent.pressedMouseButtons == 0 {
                 let work = DispatchWorkItem { [weak self] in
                     self?.pendingOpen = nil
-                    self?.openWorkspace()
+                    guard let self else { return }
+                    if self.isOverBadge(self.lastPointerLocation) { self.showRelay() } else { self.openWorkspace() }
                 }
                 pendingOpen = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + FlowMotion.notchHoverDelay, execute: work)
@@ -225,7 +322,7 @@ final class TopNotchController: NSObject {
                 guard let self else { return }
                 self.pendingClose = nil
                 if self.relayPresented {
-                    if NSEvent.pressedMouseButtons == 0 { self.hideRelay() }
+                    if NSEvent.pressedMouseButtons == 0 && !self.relayModel.isPinned && !self.relayModel.isDraggingOut { self.hideRelay() }
                 } else {
                     self.panelController.hideAfterPointerExit()
                 }
@@ -264,6 +361,7 @@ final class TopNotchController: NSObject {
         if !wasVisible { relayPanel.alphaValue = 0 }
         relayPanel.makeKeyAndOrderFront(nil)
         relayPanel.orderFrontRegardless()
+        relayPanel.invalidateShadow()
         appearance.expanded = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowIn
@@ -272,11 +370,15 @@ final class TopNotchController: NSObject {
     }
 
     private func positionRelay(on screen: NSScreen) {
-        let visible = screen.visibleFrame
-        let size = NSSize(width: min(370, visible.width - 24), height: min(430, visible.height - 16))
-        relayPanel.setFrame(NSRect(x: visible.midX - size.width / 2,
-                                  y: TopNotchGeometry.workspaceTop(on: screen) - size.height,
-                                  width: size.width, height: size.height), display: true)
+        let frame = screen.frame
+        let top = TopNotchGeometry.workspaceTop(on: screen)
+        let notchWidth = TopNotchGeometry.frame(on: screen, hasItems: !relayModel.items.isEmpty).width
+        let width = max(1, min(max(300, notchWidth + 76), frame.width - 24))
+        let height = min(96, max(1, top - frame.minY))
+        relayPanel.setFrame(NSRect(x: frame.midX - width / 2,
+                                  y: top - height,
+                                  width: width, height: height), display: true)
+        relayPanel.invalidateShadow()
     }
 
     private func hideRelay(animated: Bool = true) {
@@ -314,6 +416,11 @@ final class TopNotchController: NSObject {
             item.target = self
             menu.addItem(item)
         }
+        if !relayModel.items.isEmpty {
+            let clearItem = NSMenuItem(title: "清空文件中转", action: #selector(clearRelayItems), keyEquivalent: "")
+            clearItem.target = self
+            menu.addItem(clearItem)
+        }
         menu.addItem(.separator())
         let hideItem = NSMenuItem(title: "隐藏顶部刘海", action: #selector(disableNotch), keyEquivalent: "")
         hideItem.target = self
@@ -329,6 +436,7 @@ final class TopNotchController: NSObject {
         openWorkspace()
         panelController.show(openSettings: true)
     }
+    @objc private func clearRelayItems() { relayModel.clearAll() }
     @objc private func disableNotch() { isEnabled = false }
     @objc private func quitApplication() { NSApp.terminate(nil) }
 }
@@ -353,28 +461,49 @@ private struct TopNotchView: View {
     @ObservedObject var appearance: TopNotchAppearance
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: model.isDropTargeted ? "tray.and.arrow.down.fill" : "waveform")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color(red: 0.72, green: 0.89, blue: 0.68))
-            Text(model.isDropTargeted ? "放入文件" : "Jaimo Flow")
-                .font(.system(size: 10.5, weight: .medium))
-            if !model.items.isEmpty {
-                Text(model.items.count > 99 ? "99+" : "\(model.items.count)")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .monospacedDigit()
+        ZStack {
+            if appearance.hardwareWidth > 0 {
+                HStack(spacing: 0) {
+                    Image(systemName: "waveform")
+                        .frame(width: model.items.isEmpty ? 32 : 60, height: 24)
+                    Spacer(minLength: appearance.hardwareWidth)
+                    if model.items.isEmpty {
+                        Image(systemName: appearance.expanded ? "chevron.up" : "chevron.down")
+                            .frame(width: 32, height: 24)
+                    } else { badge }
+                }
+            } else if model.items.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "waveform")
+                    Text("Jaimo Flow")
+                    Image(systemName: appearance.expanded ? "chevron.up" : "chevron.down")
+                }.frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: 0) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "waveform")
+                        Text("Jaimo Flow")
+                        Image(systemName: appearance.expanded ? "chevron.up" : "chevron.down")
+                    }
+                    .frame(maxWidth: .infinity)
+                    badge
+                }
             }
-            Image(systemName: appearance.expanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 7, weight: .bold))
-                .foregroundStyle(.white.opacity(0.5))
         }
-        .foregroundStyle(.white.opacity(0.92))
+        .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TopNotchShape().fill(.black))
         .contentShape(TopNotchShape())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Jaimo Flow 顶部刘海，移入展开工具站，文件中转站有 \(model.items.count) 项")
+    }
+
+    private var badge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "tray.fill")
+            Text(model.items.count > 99 ? "99+" : "\(model.items.count)").monospacedDigit()
+        }.frame(width: 52, height: 22)
+         .background(Color.white.opacity(0.16), in: Capsule())
+         .frame(width: 60, height: 24)
+         .accessibilityLabel("打开文件小兜，\(model.items.count) 项")
     }
 }
 
@@ -384,6 +513,7 @@ private final class TopNotchHostingView<Content: View>: NSHostingView<Content> {
     var onPointerChanged: (() -> Void)?
     var onFileDropTargetChanged: ((Bool) -> Void)?
     var onFileDrop: (([URL]) -> Void)?
+    var canAcceptDrop: (() -> Bool)?
     private var pointerTrackingArea: NSTrackingArea?
 
     required init(rootView: Content) {
@@ -411,12 +541,12 @@ private final class TopNotchHostingView<Content: View>: NSHostingView<Content> {
     override func accessibilityPerformPress() -> Bool { onClick?(); return true }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard !fileURLs(from: sender).isEmpty else { return [] }
+        guard canAcceptDrop?() != false, !fileURLs(from: sender).isEmpty else { return [] }
         onFileDropTargetChanged?(true)
         return .copy
     }
     override func draggingExited(_ sender: NSDraggingInfo?) { onFileDropTargetChanged?(false); onPointerChanged?() }
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { !fileURLs(from: sender).isEmpty }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { canAcceptDrop?() != false && !fileURLs(from: sender).isEmpty }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let urls = fileURLs(from: sender)
         onFileDropTargetChanged?(false)
@@ -426,5 +556,25 @@ private final class TopNotchHostingView<Content: View>: NSHostingView<Content> {
     }
     private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
         sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+}
+
+private final class RelayHostingView<Content: View>: NSHostingView<Content> {
+    var onDropTarget: ((Bool) -> Void)?
+    var onDrop: (([URL]) -> Void)?
+    var canAcceptDrop: (() -> Bool)?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    required init(rootView: Content) { super.init(rootView: rootView); registerForDraggedTypes([.fileURL]) }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+    private func urls(_ sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard canAcceptDrop?() != false, !urls(sender).isEmpty else { return [] }; onDropTarget?(true); return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { onDropTarget?(false) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { canAcceptDrop?() != false && !urls(sender).isEmpty }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let values = urls(sender); onDropTarget?(false); guard !values.isEmpty else { return false }; onDrop?(values); return true
     }
 }

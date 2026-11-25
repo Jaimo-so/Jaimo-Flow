@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
+import Quartz
 
 struct FileRelayItem: Codable, Identifiable, Equatable {
     let id: UUID
@@ -16,12 +18,24 @@ final class FileRelayModel: ObservableObject {
     @Published private(set) var items: [FileRelayItem] = []
     @Published private(set) var isImporting = false
     @Published var errorMessage: String?
+    @Published var statusMessage: String?
+    private var statusWork: DispatchWorkItem?
     @Published var isDropTargeted = false
+    @Published var isPinned = false
+    @Published var isDraggingOut = false
+    @Published var removeAfterDrag: Bool {
+        didSet { defaults.set(removeAfterDrag, forKey: "fileRelay.removeAfterDrag") }
+    }
+    @Published private(set) var thumbnails: [UUID: NSImage] = [:]
+    private let defaults: UserDefaults
 
     private let rootURL: URL
     private let indexURL: URL
+    private var pendingImports: [[URL]] = []
 
-    init(rootURL: URL? = nil) {
+    init(rootURL: URL? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.removeAfterDrag = defaults.bool(forKey: "fileRelay.removeAfterDrag")
         let baseURL = rootURL ?? FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -47,23 +61,29 @@ final class FileRelayModel: ObservableObject {
 
     func add(urls: [URL]) {
         let accepted = urls.filter { $0.isFileURL }
-        guard !accepted.isEmpty, !isImporting else { return }
-        isImporting = true
-        errorMessage = nil
-        let rootURL = rootURL
+        guard !accepted.isEmpty else { return }
+        if !isImporting && pendingImports.isEmpty { errorMessage = nil }
+        pendingImports.append(accepted)
+        processNextImport()
+    }
 
+    private func processNextImport() {
+        guard !isImporting, !pendingImports.isEmpty else { return }
+        let accepted = pendingImports.removeFirst()
+        isImporting = true
+        let rootURL = rootURL
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Self.importFiles(accepted, into: rootURL)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.isImporting = false
-                switch result {
-                case .success(let imported):
-                    self.items.insert(contentsOf: imported, at: 0)
-                    self.persist()
-                case .failure(let error):
-                    self.errorMessage = error.localizedDescription
+                self.items.insert(contentsOf: result.items, at: 0)
+                if !result.items.isEmpty { self.persist() }
+                if !result.errors.isEmpty {
+                    let failure = "部分文件无法导入：" + result.errors.joined(separator: "；")
+                    self.errorMessage = [self.errorMessage, failure].compactMap { $0 }.joined(separator: "；")
                 }
+                self.isImporting = false
+                self.processNextImport()
             }
         }
     }
@@ -75,6 +95,7 @@ final class FileRelayModel: ObservableObject {
                 try FileManager.default.removeItem(at: containerURL)
             }
             items.removeAll { $0.id == item.id }
+            thumbnails.removeValue(forKey: item.id)
             persist()
         } catch {
             errorMessage = "无法移除「\(item.originalName)」：\(error.localizedDescription)"
@@ -96,11 +117,48 @@ final class FileRelayModel: ObservableObject {
             }
         }
         items = remaining
+        let remainingIDs = Set(remaining.map(\.id))
+        thumbnails = thumbnails.filter { remainingIDs.contains($0.key) }
         persist()
         if let lastError {
             errorMessage = "部分文件无法清空：\(lastError.localizedDescription)"
         } else {
             errorMessage = nil
+        }
+    }
+
+    func copy(_ item: FileRelayItem) {
+        let url = storedURL(for: item)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "文件副本已经不存在，请移除此记录"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        if NSPasteboard.general.writeObjects([url as NSURL]) {
+            errorMessage = nil
+            showStatus("已复制文件")
+        } else {
+            errorMessage = "无法复制文件"
+        }
+    }
+
+    private func showStatus(_ message: String) {
+        statusWork?.cancel()
+        statusMessage = message
+        let work = DispatchWorkItem { [weak self] in self?.statusMessage = nil }
+        statusWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    func thumbnail(for item: FileRelayItem) {
+        guard thumbnails[item.id] == nil else { return }
+        let request = QLThumbnailGenerator.Request(fileAt: storedURL(for: item), size: CGSize(width: 96, height: 70), scale: 2, representationTypes: .thumbnail)
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
+            guard let image = representation?.nsImage else { return }
+            DispatchQueue.main.async {
+                guard let self, self.items.contains(where: { $0.id == item.id }) else { return }
+                self.thumbnails[item.id] = image
+            }
         }
     }
 
@@ -146,51 +204,27 @@ final class FileRelayModel: ObservableObject {
     }
 
     nonisolated private static func importFiles(
-        _ urls: [URL],
-        into rootURL: URL
-    ) -> Result<[FileRelayItem], Error> {
+        _ urls: [URL], into rootURL: URL
+    ) -> (items: [FileRelayItem], errors: [String]) {
         var imported: [FileRelayItem] = []
-        do {
-            try FileManager.default.createDirectory(
-                at: rootURL,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            for sourceURL in urls {
-                let id = UUID()
-                let containerURL = rootURL.appendingPathComponent(id.uuidString, isDirectory: true)
-                try FileManager.default.createDirectory(
-                    at: containerURL,
-                    withIntermediateDirectories: false,
-                    attributes: nil
-                )
+        var errors: [String] = []
+        for sourceURL in urls {
+            let id = UUID()
+            let containerURL = rootURL.appendingPathComponent(id.uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: containerURL, withIntermediateDirectories: true)
                 let destinationURL = containerURL.appendingPathComponent(sourceURL.lastPathComponent)
-                do {
-                    try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-                    let values = try sourceURL.resourceValues(forKeys: [.isDirectoryKey])
-                    imported.append(
-                        FileRelayItem(
-                            id: id,
-                            originalName: sourceURL.lastPathComponent,
-                            relativePath: id.uuidString + "/" + sourceURL.lastPathComponent,
-                            isDirectory: values.isDirectory == true,
-                            byteSize: byteSize(at: destinationURL),
-                            addedAt: Date()
-                        )
-                    )
-                } catch {
-                    try? FileManager.default.removeItem(at: containerURL)
-                    throw error
-                }
-            }
-            return .success(imported)
-        } catch {
-            for item in imported {
-                let containerURL = rootURL.appendingPathComponent(item.id.uuidString, isDirectory: true)
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                let values = try sourceURL.resourceValues(forKeys: [.isDirectoryKey])
+                imported.append(FileRelayItem(id: id, originalName: sourceURL.lastPathComponent,
+                    relativePath: id.uuidString + "/" + sourceURL.lastPathComponent,
+                    isDirectory: values.isDirectory == true, byteSize: byteSize(at: destinationURL), addedAt: Date()))
+            } catch {
                 try? FileManager.default.removeItem(at: containerURL)
+                errors.append("\(sourceURL.lastPathComponent)：\(error.localizedDescription)")
             }
-            return .failure(error)
         }
+        return (imported, errors)
     }
 
     nonisolated private static func byteSize(at url: URL) -> Int64 {
@@ -212,165 +246,327 @@ final class FileRelayModel: ObservableObject {
     }
 }
 
-struct FileRelayPanelView: View {
-    @ObservedObject var model: FileRelayModel
-    let onOpenWorkspace: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var clearArmed = false
-    @State private var disarmWork: DispatchWorkItem?
-
-    var body: some View {
-        let theme = ClipFlowTheme(scheme: colorScheme)
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("文件中转站")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("\(model.items.count) 项 · \(model.storageSummary) · 仅本机")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(theme.muted)
-                        .monospacedDigit()
-                }
-                Spacer()
-                Button(action: onOpenWorkspace) {
-                    Label("打开工具站", systemImage: "rectangle.expand.vertical")
-                }
-                .buttonStyle(GlassButtonStyle(kind: .primary))
-                .fixedSize()
-            }
-            .padding(14)
-
-            Divider().overlay(theme.hairline)
-
-            Group {
-                if model.items.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "tray.and.arrow.down")
-                            .font(.system(size: 26))
-                            .foregroundStyle(theme.muted)
-                        Text("把文件或文件夹拖到顶部刘海")
-                            .font(.system(size: 12.5, weight: .medium))
-                        Text("Jaimo Flow 会保存独立副本，原文件不会移动或删除。")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(theme.muted)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 250)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 5) {
-                            ForEach(model.items) { item in
-                                relayRow(item, theme: theme)
-                            }
-                        }
-                        .padding(10)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if model.isImporting || model.errorMessage != nil {
-                Divider().overlay(theme.hairline)
-                HStack(spacing: 8) {
-                    if model.isImporting { ProgressView().controlSize(.small) }
-                    Text(model.isImporting ? "正在复制到本机中转目录…" : model.errorMessage ?? "")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(model.errorMessage == nil ? theme.muted : theme.danger)
-                        .lineLimit(2)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 35)
-            }
-
-            if !model.items.isEmpty {
-                Divider().overlay(theme.hairline)
-                HStack {
-                    Text("拖出文件不会自动移除中转副本")
-                        .font(.system(size: 10))
-                        .foregroundStyle(theme.muted)
-                    Spacer()
-                    Button(clearArmed ? "确认清空" : "清空") { handleClear() }
-                        .buttonStyle(GlassButtonStyle(kind: clearArmed ? .danger : .normal))
-                        .accessibilityHint("点击后需要再次确认")
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 42)
-            }
-        }
-        .foregroundStyle(theme.foreground)
-        .background(VisualEffectBackground())
-        .background(theme.glass.opacity(0.96))
-        .onDisappear(perform: disarmClear)
+@MainActor
+final class RelayPreview: NSObject, @preconcurrency QLPreviewPanelDataSource {
+    static let shared = RelayPreview()
+    private var url: URL?
+    @discardableResult
+    func show(_ url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        self.url = url
+        guard let panel = QLPreviewPanel.shared() else { return false }
+        panel.dataSource = self
+        panel.reloadData()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        return true
     }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { url == nil ? 0 : 1 }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url as NSURL? }
+}
 
-    private func relayRow(_ item: FileRelayItem, theme: ClipFlowTheme) -> some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: model.storedURL(for: item).path))
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.originalName)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .lineLimit(1)
-                Text("\(ByteCountFormatter.string(fromByteCount: item.byteSize, countStyle: .file)) · \(item.addedAt.formatted(.relative(presentation: .named)))")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            Button { model.reveal(item) } label: {
-                Image(systemName: "folder")
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(IslandRelayIconButtonStyle())
-            .accessibilityLabel("在访达中显示 \(item.originalName)")
-            Button { model.remove(item) } label: {
-                Image(systemName: "xmark")
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(IslandRelayIconButtonStyle(danger: true))
-            .accessibilityLabel("从中转站移除 \(item.originalName)")
-        }
-        .padding(8)
-        .background(theme.chip)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onDrag {
-            NSItemProvider(contentsOf: model.storedURL(for: item)) ?? NSItemProvider()
-        }
-        .accessibilityHint("可拖到访达或其他应用")
-    }
+struct RelayDragHandle: NSViewRepresentable {
+    let model: FileRelayModel
+    let items: [FileRelayItem]
+    let label: String
+    var onContextMenuChanged: ((Bool) -> Void)?
 
-    private func handleClear() {
-        if clearArmed {
-            disarmClear()
-            model.clearAll()
-            return
-        }
-        clearArmed = true
-        let work = DispatchWorkItem { disarmClear() }
-        disarmWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
-    }
-
-    private func disarmClear() {
-        disarmWork?.cancel()
-        disarmWork = nil
-        clearArmed = false
+    func makeNSView(context: Context) -> RelayDragView { RelayDragView() }
+    func updateNSView(_ view: RelayDragView, context: Context) {
+        view.model = model
+        view.items = items
+        view.onContextMenuChanged = onContextMenuChanged
+        view.setAccessibilityLabel(label)
     }
 }
 
-private struct IslandRelayIconButtonStyle: ButtonStyle {
-    var danger = false
+final class RelayDragView: NSView, NSDraggingSource {
+    weak var model: FileRelayModel?
+    var items: [FileRelayItem] = []
+    var onContextMenuChanged: ((Bool) -> Void)?
+    private var start: NSPoint?
+    private var draggedItems: [FileRelayItem] = []
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, let model, let first = items.first {
+            start = nil
+            RelayPreview.shared.show(model.storedURL(for: first))
+            return
+        }
+        start = event.locationInWindow
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let model, let item = items.first else { return }
+        onContextMenuChanged?(true)
+        defer { onContextMenuChanged?(false) }
+
+        let menu = NSMenu()
+        let previewItem = NSMenuItem(title: "预览", action: #selector(previewFirst), keyEquivalent: "")
+        previewItem.target = self
+        menu.addItem(previewItem)
+
+        let copyItem = NSMenuItem(title: "复制文件", action: #selector(copyFirst), keyEquivalent: "")
+        copyItem.target = self
+        menu.addItem(copyItem)
+
+        let revealItem = NSMenuItem(title: "在访达中显示", action: #selector(revealFirst), keyEquivalent: "")
+        revealItem.target = self
+        menu.addItem(revealItem)
+
+        menu.addItem(.separator())
+
+        let removeItem = NSMenuItem(title: "移除「\(item.originalName)」", action: #selector(removeFirst), keyEquivalent: "")
+        removeItem.target = self
+        menu.addItem(removeItem)
+
+        if model.items.count > 1 {
+            let clearItem = NSMenuItem(title: "清空全部", action: #selector(clearAllItems), keyEquivalent: "")
+            clearItem.target = self
+            menu.addItem(clearItem)
+        }
+
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func previewFirst() {
+        guard let model, let item = items.first else { return }
+        RelayPreview.shared.show(model.storedURL(for: item))
+    }
+
+    @objc private func copyFirst() {
+        guard let model, let item = items.first else { return }
+        model.copy(item)
+    }
+
+    @objc private func revealFirst() {
+        guard let model, let item = items.first else { return }
+        model.reveal(item)
+    }
+
+    @objc private func removeFirst() {
+        guard let model, let item = items.first else { return }
+        model.remove(item)
+    }
+
+    @objc private func clearAllItems() {
+        model?.clearAll()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) > 3,
+              let model, !items.isEmpty else { return }
+        self.start = nil
+        let existingItems = items.filter { FileManager.default.fileExists(atPath: model.storedURL(for: $0).path) }
+        guard !existingItems.isEmpty else {
+            model.errorMessage = "文件副本已经不存在，请移除此记录"
+            return
+        }
+        if existingItems.count != items.count { model.errorMessage = "部分文件副本已经不存在，无法拖出" }
+        let point = convert(event.locationInWindow, from: nil)
+        let dragging = existingItems.enumerated().map { index, item -> NSDraggingItem in
+            let url = model.storedURL(for: item)
+            let drag = NSDraggingItem(pasteboardWriter: url as NSURL)
+            let offset = CGFloat(min(index, 4)) * 4
+            drag.setDraggingFrame(NSRect(x: point.x - 20 + offset, y: point.y - 20 - offset, width: 40, height: 40),
+                                  contents: model.thumbnails[item.id] ?? NSWorkspace.shared.icon(forFile: url.path))
+            return drag
+        }
+        draggedItems = existingItems
+        model.isDraggingOut = true
+        beginDraggingSession(with: dragging, event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        guard let model else { return }
+        model.isDraggingOut = false
+        if !operation.isEmpty && model.removeAfterDrag { for item in draggedItems { model.remove(item) } }
+        draggedItems = []
+    }
+}
+
+struct FileRelayAppearanceView: View {
+    @ObservedObject var preferences: PreferencesStore
+    @ObservedObject var model: FileRelayModel
+    var onContextMenuChanged: ((Bool) -> Void)?
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    var body: some View {
+        FileRelayPanelView(model: model, onContextMenuChanged: onContextMenuChanged)
+            .environment(\.colorScheme, preferences.appearance == .black ? .dark : systemColorScheme)
+            .preferredColorScheme(preferences.appearance == .black ? .dark : nil)
+    }
+}
+
+struct FileRelayPanelView: View {
+    @ObservedObject var model: FileRelayModel
+    var onContextMenuChanged: ((Bool) -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
-    func makeBody(configuration: Configuration) -> some View {
+    private let earRadius: CGFloat = 18
+    private let bottomRadius: CGFloat = 22
+
+    var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
-        configuration.label
-            .foregroundStyle(danger ? theme.danger : theme.muted)
-            .background(configuration.isPressed ? (danger ? theme.danger.opacity(0.18) : theme.chipHigh) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        let pocketShape = RelayPocketShape(earRadius: earRadius, bottomRadius: bottomRadius)
+        let borderShape = RelayPocketBorderShape(earRadius: earRadius, bottomRadius: bottomRadius)
+
+        ZStack {
+            VisualEffectBackground()
+            theme.canvas.opacity(0.97)
+            if model.isDropTargeted {
+                theme.accentWash
+            }
+
+            if model.items.isEmpty {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(model.isDropTargeted ? theme.accent : theme.muted.opacity(0.75))
+                    .accessibilityLabel("拖入文件")
+            } else {
+                GeometryReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(model.items) { item in
+                                fileTile(item, theme: theme)
+                            }
+                        }
+                        .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .center)
+                    }
+                }
+                .padding(.horizontal, earRadius + 10)
+                .padding(.vertical, 10)
+            }
+
+            if model.isImporting {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, earRadius + 10)
+                    .padding(.bottom, 10)
+            }
+        }
+        .foregroundStyle(theme.foreground)
+        .clipShape(pocketShape)
+        .overlay(
+            borderShape
+                .stroke(
+                    model.isDropTargeted ? theme.accent.opacity(0.75) : theme.hairline,
+                    lineWidth: model.isDropTargeted ? 1.5 : 1
+                )
+        )
+    }
+
+    private func fileTile(_ item: FileRelayItem, theme: ClipFlowTheme) -> some View {
+        let thumbnail = model.thumbnails[item.id]
+        let icon = thumbnail ?? NSWorkspace.shared.icon(forFile: model.storedURL(for: item).path)
+
+        return VStack(spacing: 4) {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: thumbnail == nil ? 0 : 6, style: .continuous))
+            Text(item.originalName)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(theme.foreground)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 66)
+        }
+        .frame(width: 68, height: 68)
+        .contentShape(Rectangle())
+        .overlay(
+            RelayDragHandle(
+                model: model,
+                items: [item],
+                label: "拖出 \(item.originalName)",
+                onContextMenuChanged: onContextMenuChanged
+            )
+        )
+        .onAppear { model.thumbnail(for: item) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.originalName)
+        .accessibilityHint("拖出文件或右键查看更多操作")
+    }
+}
+
+struct RelayPocketShape: Shape {
+    var earRadius: CGFloat = 18
+    var bottomRadius: CGFloat = 22
+
+    func path(in rect: CGRect) -> Path {
+        let ear = min(earRadius, rect.width * 0.16, rect.height * 0.45)
+        let r = min(bottomRadius, max(0, (rect.width - ear * 2) / 2), max(0, rect.height - ear))
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addCurve(
+            to: CGPoint(x: rect.minX + ear, y: rect.minY + ear),
+            control1: CGPoint(x: rect.minX + ear * 0.65, y: rect.minY),
+            control2: CGPoint(x: rect.minX + ear, y: rect.minY + ear * 0.35)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + ear, y: rect.maxY - r))
+        path.addCurve(
+            to: CGPoint(x: rect.minX + ear + r, y: rect.maxY),
+            control1: CGPoint(x: rect.minX + ear, y: rect.maxY - r * 0.42),
+            control2: CGPoint(x: rect.minX + ear + r * 0.42, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - ear - r, y: rect.maxY))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - ear, y: rect.maxY - r),
+            control1: CGPoint(x: rect.maxX - ear - r * 0.42, y: rect.maxY),
+            control2: CGPoint(x: rect.maxX - ear, y: rect.maxY - r * 0.42)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - ear, y: rect.minY + ear))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY),
+            control1: CGPoint(x: rect.maxX - ear, y: rect.minY + ear * 0.35),
+            control2: CGPoint(x: rect.maxX - ear * 0.65, y: rect.minY)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct RelayPocketBorderShape: Shape {
+    var earRadius: CGFloat = 18
+    var bottomRadius: CGFloat = 22
+
+    func path(in rect: CGRect) -> Path {
+        let inset = rect.insetBy(dx: 0.5, dy: 0)
+        let maxY = inset.maxY - 0.5
+        let ear = min(earRadius, inset.width * 0.16, inset.height * 0.45)
+        let r = min(bottomRadius, max(0, (inset.width - ear * 2) / 2), max(0, maxY - inset.minY - ear))
+        var path = Path()
+        path.move(to: CGPoint(x: inset.minX, y: inset.minY + 0.5))
+        path.addCurve(
+            to: CGPoint(x: inset.minX + ear, y: inset.minY + ear),
+            control1: CGPoint(x: inset.minX + ear * 0.65, y: inset.minY + 0.5),
+            control2: CGPoint(x: inset.minX + ear, y: inset.minY + ear * 0.35)
+        )
+        path.addLine(to: CGPoint(x: inset.minX + ear, y: maxY - r))
+        path.addCurve(
+            to: CGPoint(x: inset.minX + ear + r, y: maxY),
+            control1: CGPoint(x: inset.minX + ear, y: maxY - r * 0.42),
+            control2: CGPoint(x: inset.minX + ear + r * 0.42, y: maxY)
+        )
+        path.addLine(to: CGPoint(x: inset.maxX - ear - r, y: maxY))
+        path.addCurve(
+            to: CGPoint(x: inset.maxX - ear, y: maxY - r),
+            control1: CGPoint(x: inset.maxX - ear - r * 0.42, y: maxY),
+            control2: CGPoint(x: inset.maxX - ear, y: maxY - r * 0.42)
+        )
+        path.addLine(to: CGPoint(x: inset.maxX - ear, y: inset.minY + ear))
+        path.addCurve(
+            to: CGPoint(x: inset.maxX, y: inset.minY + 0.5),
+            control1: CGPoint(x: inset.maxX - ear, y: inset.minY + ear * 0.35),
+            control2: CGPoint(x: inset.maxX - ear * 0.65, y: inset.minY + 0.5)
+        )
+        return path
     }
 }
