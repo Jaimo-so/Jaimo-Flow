@@ -1,5 +1,7 @@
 import AppKit
+import ClipFlowKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RecordingWorkspaceOverlay: View {
     @ObservedObject var transcription: RecordingTranscriptionManager
@@ -8,6 +10,7 @@ struct RecordingWorkspaceOverlay: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var searchText = ""
+    @State private var listSearchText = ""
     @State private var selectedSpeakerFilter: String?
     @State private var editingSpeaker: RecordingSpeaker?
     @State private var editingSpeakerName = ""
@@ -16,6 +19,10 @@ struct RecordingWorkspaceOverlay: View {
     @State private var copiedNotice: String?
     @State private var recordingToDelete: RecordingItem?
     @State private var deleteError: String?
+    @State private var fileActionError: String?
+    @State private var renamingURL: URL?
+    @State private var renamingText = ""
+    @FocusState private var renameFieldFocused: Bool
 
     init(
         transcription: RecordingTranscriptionManager,
@@ -76,6 +83,12 @@ struct RecordingWorkspaceOverlay: View {
         )) {
             Button("好", role: .cancel) { deleteError = nil }
         } message: { Text(deleteError ?? "") }
+        .alert("无法完成操作", isPresented: Binding(
+            get: { fileActionError != nil },
+            set: { if !$0 { fileActionError = nil } }
+        )) {
+            Button("好", role: .cancel) { fileActionError = nil }
+        } message: { Text(fileActionError ?? "") }
         .onAppear {
             transcription.reloadRecordings()
             if let current = transcription.selectedRecording {
@@ -99,6 +112,7 @@ struct RecordingWorkspaceOverlay: View {
 
     private func closeWorkspace() {
         commitSegmentEditIfNeeded()
+        if renamingURL != nil { commitRename() }
         transcription.playback.stop()
         transcription.showingSettings = false
         onClose()
@@ -175,6 +189,18 @@ struct RecordingWorkspaceOverlay: View {
         }
     }
 
+    private var filteredRecordings: [RecordingItem] {
+        let query = listSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return transcription.recordings }
+        return transcription.recordings.filter {
+            RecordingFileActions.matchesSearch(title: $0.displayTitle, query: query)
+                || RecordingFileActions.matchesSearch(
+                    title: $0.url.deletingPathExtension().lastPathComponent,
+                    query: query
+                )
+        }
+    }
+
     private func recordingSidebar(theme: ClipFlowTheme) -> some View {
         VStack(spacing: 0) {
             HStack {
@@ -193,6 +219,34 @@ struct RecordingWorkspaceOverlay: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
 
+            if !transcription.recordings.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
+                    TextField("筛选录音名称…", text: $listSearchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                    if !listSearchText.isEmpty {
+                        Button {
+                            listSearchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空录音筛选")
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(theme.chip)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+
             Divider().overlay(theme.hairline)
 
             if transcription.recordings.isEmpty {
@@ -210,10 +264,25 @@ struct RecordingWorkspaceOverlay: View {
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filteredRecordings.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 18))
+                        .foregroundStyle(theme.muted.opacity(0.6))
+                    Text("没有匹配的录音")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(theme.foregroundSecondary)
+                    Text("试试名称中的日期或其他关键词")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 4) {
-                        ForEach(transcription.recordings) { item in
+                        ForEach(filteredRecordings) { item in
                             sidebarRow(item: item, theme: theme)
                         }
                     }
@@ -224,50 +293,91 @@ struct RecordingWorkspaceOverlay: View {
         .background(theme.card.opacity(0.5))
     }
 
+    @ViewBuilder
     private func sidebarRow(item: RecordingItem, theme: ClipFlowTheme) -> some View {
         let isSelected = transcription.selectedRecording?.url == item.url
+        let isRenaming = renamingURL == item.url
         let state = transcription.state(for: item.url)
 
-        return Button {
-            commitSegmentEditIfNeeded()
-            selectedSpeakerFilter = nil
-            transcription.selectRecording(item.url)
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.displayTitle)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? theme.foreground : theme.foregroundSecondary)
-                    .lineLimit(1)
-
-                HStack(spacing: 6) {
-                    Text(item.durationText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(theme.muted)
-
-                    Spacer(minLength: 4)
-
-                    statusBadge(for: state, theme: theme)
+        let rowChrome = { (label: AnyView) in
+            label
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(isSelected || isRenaming ? theme.selection : Color.clear)
+                .overlay(alignment: .leading) {
+                    if isSelected || isRenaming {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(theme.accent)
+                            .frame(width: 2.5)
+                            .padding(.vertical, 5)
+                    }
                 }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? theme.selection : Color.clear)
-            .overlay(alignment: .leading) {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(theme.accent)
-                        .frame(width: 2.5)
-                        .padding(.vertical, 5)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(.plain)
+
+        Group {
+            if isRenaming {
+                rowChrome(AnyView(
+                    VStack(alignment: .leading, spacing: 5) {
+                        TextField("录音名称", text: $renamingText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, weight: .semibold))
+                            .focused($renameFieldFocused)
+                            .onSubmit { commitRename() }
+                            .onExitCommand { cancelRename() }
+                        Text(item.durationText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(theme.muted)
+                    }
+                ))
+            } else {
+                Button {
+                    if renamingURL != nil { commitRename() }
+                    commitSegmentEditIfNeeded()
+                    selectedSpeakerFilter = nil
+                    transcription.selectRecording(item.url)
+                } label: {
+                    rowChrome(AnyView(
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(item.displayTitle)
+                                .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(isSelected ? theme.foreground : theme.foregroundSecondary)
+                                .lineLimit(1)
+
+                            HStack(spacing: 6) {
+                                Text(item.durationText)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .monospacedDigit()
+                                    .foregroundStyle(theme.muted)
+
+                                Spacer(minLength: 4)
+
+                                statusBadge(for: state, theme: theme)
+                            }
+                        }
+                    ))
+                }
+                .buttonStyle(.plain)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contextMenu {
+            Button("重命名") {
+                transcription.selectRecording(item.url)
+                beginRename(item)
+            }
+            if let transcript = transcription.transcript(for: item.url) {
+                Menu("导出字幕") {
+                    ForEach(RecordingExportFormat.allCases, id: \.self) { format in
+                        Button(format.menuTitle) {
+                            exportTranscript(transcript, format: format, title: item.displayTitle)
+                        }
+                    }
+                }
+            }
             Button("重新转写") {
                 transcription.selectRecording(item.url)
                 transcription.transcribe(item.url)
@@ -387,9 +497,31 @@ struct RecordingWorkspaceOverlay: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(recording.displayTitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if renamingURL == recording.url {
+                            TextField("录音名称", text: $renamingText)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 14, weight: .semibold))
+                                .focused($renameFieldFocused)
+                                .onSubmit { commitRename() }
+                                .onExitCommand { cancelRename() }
+                        } else {
+                            Text(recording.displayTitle)
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(1)
+                                .help("点击铅笔可重命名")
+                        }
+                        Button {
+                            beginRename(recording)
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .help("重命名录音")
+                        .accessibilityLabel("重命名录音")
+                    }
                     HStack(spacing: 8) {
                         Text("时长 \(recording.durationText)")
                             .monospacedDigit()
@@ -417,11 +549,18 @@ struct RecordingWorkspaceOverlay: View {
                         Button("复制 SRT 字幕") {
                             copyToPasteboard(transcript.srtText, notice: "已复制 SRT 字幕")
                         }
+                        Divider()
+                        ForEach(RecordingExportFormat.allCases, id: \.self) { format in
+                            Button(format.menuTitle) {
+                                exportTranscript(transcript, format: format, title: recording.displayTitle)
+                            }
+                        }
                     } label: {
-                        Label("复制", systemImage: "doc.on.doc")
+                        Label("复制或导出", systemImage: "square.and.arrow.up")
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                    .help("复制或导出字幕")
                 }
 
                 if state.isTranscribing {
@@ -829,9 +968,74 @@ struct RecordingWorkspaceOverlay: View {
     private func copyToPasteboard(_ text: String, notice: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        showNotice(notice)
+    }
+
+    private func showNotice(_ notice: String) {
         copiedNotice = notice
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             if copiedNotice == notice { copiedNotice = nil }
+        }
+    }
+
+    private func beginRename(_ item: RecordingItem) {
+        if renamingURL != nil, renamingURL != item.url {
+            commitRename()
+        }
+        renamingURL = item.url
+        renamingText = item.displayTitle
+        DispatchQueue.main.async {
+            renameFieldFocused = true
+        }
+    }
+
+    private func cancelRename() {
+        renamingURL = nil
+        renamingText = ""
+        renameFieldFocused = false
+    }
+
+    private func commitRename() {
+        guard let url = renamingURL else { return }
+        let title = renamingText
+        renamingURL = nil
+        renameFieldFocused = false
+        do {
+            let newURL = try transcription.renameRecording(url, to: title)
+            if newURL != url {
+                showNotice("已重命名")
+            }
+        } catch {
+            renamingText = title
+            fileActionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        renamingText = ""
+    }
+
+    private func exportTranscript(_ transcript: RecordingTranscript, format: RecordingExportFormat, title: String) {
+        commitSegmentEditIfNeeded()
+        let panel = NSSavePanel()
+        let ext = format.fileExtension
+        if let type = UTType(filenameExtension: ext) {
+            panel.allowedContentTypes = [type]
+        } else {
+            panel.allowedContentTypes = [.plainText]
+        }
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.title = "导出字幕"
+        panel.nameFieldStringValue = format.defaultFileName(title: title)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let body = format.contents(
+                formattedText: transcript.formattedTextWithSpeakers,
+                plainText: transcript.plainText,
+                srtText: transcript.srtText
+            )
+            try body.write(to: url, atomically: true, encoding: .utf8)
+            showNotice("\(format.successNotice)：\(url.lastPathComponent)")
+        } catch {
+            fileActionError = "无法导出字幕：\((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
         }
     }
 

@@ -74,6 +74,11 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
         elapsedTime = 0
     }
 
+    func recordingWasRenamed(_ url: URL, to newURL: URL) {
+        guard case .saved(let savedURL) = status, savedURL == url else { return }
+        status = .saved(newURL)
+    }
+
     func toggleRecording() {
         if isRecording {
             pause()

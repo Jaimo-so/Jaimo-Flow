@@ -180,6 +180,9 @@ final class HomeDashboardModel: ObservableObject {
         recordingTranscription.onRecordingDeleted = { [weak audioRecorder] url, latest in
             audioRecorder?.recordingWasDeleted(url, latestRemaining: latest)
         }
+        recordingTranscription.onRecordingRenamed = { [weak audioRecorder] url, newURL in
+            audioRecorder?.recordingWasRenamed(url, to: newURL)
+        }
         audioRecorder.onDidFinishRecording = { [weak self] url in
             self?.recordingTranscription.handleNewRecording(url)
         }
