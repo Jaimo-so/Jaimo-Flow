@@ -214,7 +214,160 @@ do {
         "相同版本不应提示更新"
     )
 
-    print("Jaimo Flow self-test passed: 29 checks")
+
+    // Recording file actions: rename, search, export names
+    try require(
+        RecordingFileActions.displayTitle(fromStem: "Jaimo Flow 录音 2026-11-25 10-00-00-123") == "2026-11-25 10-00-00-123",
+        "默认录音名没有去掉前缀"
+    )
+    try require(
+        RecordingFileActions.displayTitle(fromStem: "周会纪要") == "周会纪要",
+        "自定义录音名不应再加工"
+    )
+    try require(
+        RecordingFileActions.sanitizeTitle("  周会 / 纪要:草稿  ") == "周会 纪要 草稿",
+        "录音名没有清理非法字符或首尾空白"
+    )
+    try require(
+        RecordingFileActions.sanitizeTitle("...") == "" && RecordingFileActions.sanitizeTitle("///") == "",
+        "无效录音名应清理为空"
+    )
+    try require(
+        RecordingFileActions.sanitizeTitle(String(repeating: "会", count: 120)).count == RecordingFileActions.maxTitleLength,
+        "过长录音名没有截断"
+    )
+    try require(
+        RecordingFileActions.uniqueStem(desired: "周会", usedStems: ["周会", "周会 2"]) == "周会 3",
+        "重名录音没有递增避让"
+    )
+    try require(
+        RecordingFileActions.uniqueStem(desired: "周会", usedStems: ["周会", "其他"], excluding: "周会") == "周会",
+        "重命名自身时不应被当作冲突"
+    )
+
+    let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("jaimo-recording-file-actions-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    let originalAudio = tempRoot.appendingPathComponent("Jaimo Flow 录音 2026-11-25 10-00-00-001.m4a")
+    let originalJSON = RecordingFileActions.transcriptJSONURL(for: originalAudio)
+    let originalTXT = RecordingFileActions.plainTextURL(for: originalAudio)
+    try Data("audio".utf8).write(to: originalAudio)
+    try Data("{\"ok\":true}".utf8).write(to: originalJSON)
+    try Data("字幕正文".utf8).write(to: originalTXT)
+
+    let noOpPlan = try RecordingFileActions.planRename(
+        audioURL: originalAudio,
+        desiredTitle: "2026-11-25 10-00-00-001",
+        occupiedStems: RecordingFileActions.occupiedStems(in: tempRoot)
+    )
+    try require(noOpPlan.isNoOp, "仅确认显示标题时不应改文件名")
+
+    let sameStemPlan = try RecordingFileActions.planRename(
+        audioURL: originalAudio,
+        desiredTitle: "Jaimo Flow 录音 2026-11-25 10-00-00-001",
+        occupiedStems: RecordingFileActions.occupiedStems(in: tempRoot)
+    )
+    try require(sameStemPlan.isNoOp, "提交原文件名时不应改文件名")
+
+    let neighbor = tempRoot.appendingPathComponent("周会.m4a")
+    try Data("other".utf8).write(to: neighbor)
+    let collisionPlan = try RecordingFileActions.planRename(
+        audioURL: originalAudio,
+        desiredTitle: "周会",
+        occupiedStems: RecordingFileActions.occupiedStems(in: tempRoot)
+    )
+    try require(
+        collisionPlan.destinationAudio.lastPathComponent == "周会 2.m4a",
+        "与已有录音重名时应改为“周会 2”"
+    )
+    try FileManager.default.removeItem(at: neighbor)
+
+    do {
+        _ = try RecordingFileActions.planRename(
+            audioURL: originalAudio,
+            desiredTitle: "   ///   ",
+            occupiedStems: []
+        )
+        throw SelfTestError.failed("空名称没有被拒绝")
+    } catch RecordingFileActionError.emptyTitle {
+    }
+
+    let renamed = try RecordingFileActions.applyRename(
+        try RecordingFileActions.planRename(
+            audioURL: originalAudio,
+            desiredTitle: "周会纪要",
+            occupiedStems: RecordingFileActions.occupiedStems(in: tempRoot)
+        )
+    )
+    try require(renamed.lastPathComponent == "周会纪要.m4a", "重命名后的音频文件名不正确")
+    try require(FileManager.default.fileExists(atPath: renamed.path), "重命名后找不到音频")
+    try require(
+        FileManager.default.fileExists(atPath: RecordingFileActions.transcriptJSONURL(for: renamed).path)
+            && FileManager.default.fileExists(atPath: RecordingFileActions.plainTextURL(for: renamed).path),
+        "重命名没有同时移动字幕侧车文件"
+    )
+    try require(
+        !FileManager.default.fileExists(atPath: originalAudio.path)
+            && !FileManager.default.fileExists(atPath: originalJSON.path),
+        "重命名后仍留下旧文件"
+    )
+    let renamedText = try String(contentsOf: RecordingFileActions.plainTextURL(for: renamed), encoding: .utf8)
+    try require(renamedText == "字幕正文", "重命名后字幕内容损坏")
+
+    let occupied = RecordingFileActions.occupiedStems(in: tempRoot)
+    try require(occupied.contains("周会纪要"), "占用名应包含重命名后的词干")
+
+    // rollback: destination already exists
+    let blocker = tempRoot.appendingPathComponent("项目同步.m4a")
+    try Data("block".utf8).write(to: blocker)
+    let blockedPlan = try RecordingFileActions.planRename(
+        audioURL: renamed,
+        desiredTitle: "项目同步",
+        occupiedStems: ["周会纪要"] // omit existing dest to force apply-time collision
+    )
+    try require(blockedPlan.destinationAudio.lastPathComponent == "项目同步.m4a", "未占用时目标应为项目同步.m4a")
+    do {
+        _ = try RecordingFileActions.applyRename(blockedPlan)
+        throw SelfTestError.failed("目标已存在时没有报错")
+    } catch RecordingFileActionError.destinationExists {
+    }
+    try require(
+        FileManager.default.fileExists(atPath: renamed.path)
+            && FileManager.default.fileExists(atPath: RecordingFileActions.plainTextURL(for: renamed).path),
+        "目标冲突时没有回滚到原文件"
+    )
+
+    try require(
+        RecordingExportFormat.speakersText.defaultFileName(title: "周会纪要") == "周会纪要.txt"
+            && RecordingExportFormat.plainText.defaultFileName(title: "周会纪要") == "周会纪要 纯文本.txt"
+            && RecordingExportFormat.srt.defaultFileName(title: "周会纪要") == "周会纪要.srt",
+        "导出默认文件名不正确"
+    )
+    try require(
+        RecordingExportFormat.srt.contents(formattedText: "A", plainText: "B", srtText: "C") == "C"
+            && RecordingExportFormat.plainText.contents(formattedText: "A", plainText: "B", srtText: "C") == "B"
+            && RecordingExportFormat.speakersText.contents(formattedText: "A", plainText: "B", srtText: "C") == "A",
+        "导出内容没有按格式选择"
+    )
+    try require(
+        RecordingExportFormat.speakersText.defaultFileName(title: "///") == "录音字幕.txt",
+        "无效标题的导出文件名没有回退默认值"
+    )
+    try require(
+        RecordingFileActions.matchesSearch(title: "周会纪要", query: "  纪要  ")
+            && RecordingFileActions.matchesSearch(title: "Weekly Sync", query: "weekly")
+            && !RecordingFileActions.matchesSearch(title: "周会纪要", query: "日报"),
+        "录音名称筛选不正确"
+    )
+    try require(
+        RecordingFileActions.filteredTitles(["周会", "日报", "周会纪要"], query: "周会") == ["周会", "周会纪要"]
+            && RecordingFileActions.filteredTitles(["周会"], query: "   ").count == 1,
+        "空筛选或名称过滤结果不正确"
+    )
+
+    print("Jaimo Flow self-test passed: 54 checks")
 } catch {
     fputs("Jaimo Flow self-test failed: \(error)\n", stderr)
     exit(1)

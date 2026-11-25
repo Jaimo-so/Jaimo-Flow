@@ -11,12 +11,7 @@ struct RecordingItem: Identifiable, Equatable {
     var id: URL { url }
 
     var displayTitle: String {
-        let stem = url.deletingPathExtension().lastPathComponent
-        let prefix = "Jaimo Flow 录音 "
-        if stem.hasPrefix(prefix) {
-            return String(stem.dropFirst(prefix.count))
-        }
-        return stem
+        RecordingFileActions.displayTitle(for: url)
     }
 
     var durationText: String {
@@ -234,6 +229,7 @@ final class RecordingTranscriptionManager: ObservableObject {
     private let directoryOverride: URL?
     var canDeleteRecording: ((URL) -> Bool)?
     var onRecordingDeleted: ((URL, URL?) -> Void)?
+    var onRecordingRenamed: ((URL, URL) -> Void)?
     private var taskIDs: [URL: UUID] = [:]
     private var activeTasks: [URL: Task<Void, Never>] = [:]
     private var reloadTask: Task<Void, Never>?
@@ -622,6 +618,67 @@ final class RecordingTranscriptionManager: ObservableObject {
         }
     }
 
+    @discardableResult
+    func renameRecording(_ url: URL, to title: String) throws -> URL {
+        guard canDeleteRecording?(url) != false else {
+            throw RecordingASRError.message("这条录音正在录制或暂停中，请先完成录音。")
+        }
+        if state(for: url).isTranscribing {
+            throw RecordingASRError.message("正在转写的录音暂不能重命名，请先等待完成或取消转写。")
+        }
+        guard let item = recordings.first(where: { $0.url == url }) else {
+            throw RecordingFileActionError.recordingMissing
+        }
+
+        let directory = url.deletingLastPathComponent()
+        let plan = try RecordingFileActions.planRename(
+            audioURL: url,
+            desiredTitle: title,
+            occupiedStems: RecordingFileActions.occupiedStems(in: directory)
+        )
+        if plan.isNoOp { return url }
+
+        reloadTask?.cancel()
+        let shouldReselect = playback.currentURL == url
+        if shouldReselect { playback.reset() }
+
+        let newURL: URL
+        do {
+            newURL = try RecordingFileActions.applyRename(plan)
+        } catch {
+            if shouldReselect {
+                playback.select(url, duration: item.duration)
+            }
+            throw error
+        }
+
+        rekeyRecording(from: url, to: newURL, createdAt: item.createdAt, duration: item.duration)
+        if shouldReselect || selectedRecordingURL == newURL {
+            playback.select(newURL, duration: item.duration)
+        }
+        onRecordingRenamed?(url, newURL)
+        return newURL
+    }
+
+    private func rekeyRecording(from old: URL, to new: URL, createdAt: Date, duration: TimeInterval) {
+        if let transcript = transcripts.removeValue(forKey: old) {
+            transcripts[new] = transcript
+        }
+        if let state = states.removeValue(forKey: old) {
+            states[new] = state
+        }
+        if let cached = durationCache.removeValue(forKey: old) {
+            let modified = (try? new.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? cached.0
+            durationCache[new] = (modified, cached.1)
+        }
+        if let index = recordings.firstIndex(where: { $0.url == old }) {
+            recordings[index] = RecordingItem(url: new, createdAt: createdAt, duration: duration)
+        }
+        if selectedRecordingURL == old {
+            selectedRecordingURL = new
+        }
+    }
+
     private func persistUpdatedTranscript(_ transcript: RecordingTranscript, for url: URL) {
         transcripts[url] = transcript
         try? Self.saveTranscriptToDisk(transcript, for: url)
@@ -857,11 +914,11 @@ final class RecordingTranscriptionManager: ObservableObject {
     }
 
     nonisolated static func transcriptJSONURL(for recordingURL: URL) -> URL {
-        recordingURL.deletingPathExtension().appendingPathExtension("transcript.json")
+        RecordingFileActions.transcriptJSONURL(for: recordingURL)
     }
 
     nonisolated static func plainTextURL(for recordingURL: URL) -> URL {
-        recordingURL.deletingPathExtension().appendingPathExtension("txt")
+        RecordingFileActions.plainTextURL(for: recordingURL)
     }
 
     nonisolated static func saveTranscriptToDisk(_ transcript: RecordingTranscript, for recordingURL: URL) throws {
