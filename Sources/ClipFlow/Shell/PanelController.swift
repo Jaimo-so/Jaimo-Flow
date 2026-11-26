@@ -1,0 +1,765 @@
+import AppKit
+import Carbon
+import ClipFlowKit
+import Combine
+import QuartzCore
+import SwiftUI
+
+final class ClipFlowPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+final class ClipFlowHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+@MainActor
+final class PanelController: NSObject, NSWindowDelegate {
+    let panel: ClipFlowPanel
+    private let model: AppModel
+    let preferences: PreferencesStore
+    let shellModel: IslandShellModel
+    private let homeModel: HomeDashboardModel
+    private var moduleSubscriptions: Set<AnyCancellable> = []
+    let applicationsModel: ApplicationsModel
+    private var lastLibraryDestination: ToolDestination = .clipboard
+    private var eventMonitors: [Any] = []
+    private var pendingPointerExit: DispatchWorkItem?
+    private var resumeAfterPointerExit = false
+    private weak var hiddenModalWindow: NSWindow?
+    private weak var hiddenSheet: NSWindow?
+    private var isPresented = false
+    private var visibilityGeneration = 0
+    private var isApplyingPresentationFrame = false
+    var onVisibilityChanged: ((Bool) -> Void)?
+    var isVisible: Bool { isPresented }
+    var hasEventMonitors: Bool { !eventMonitors.isEmpty }
+
+    private let minimumWorkspaceSize = NSSize(width: 520, height: 420)
+
+    init(model: AppModel, preferences: PreferencesStore, homeModel providedHomeModel: HomeDashboardModel? = nil) {
+        self.model = model
+        self.preferences = preferences
+        shellModel = IslandShellModel(preferences: preferences)
+        if shellModel.destination == .prompts { lastLibraryDestination = .prompts }
+        homeModel = providedHomeModel ?? HomeDashboardModel(defaults: preferences.defaults)
+        applicationsModel = ApplicationsModel(defaults: preferences.defaults)
+        panel = ClipFlowPanel(
+            contentRect: NSRect(origin: .zero, size: preferences.workspaceSize),
+            styleMask: [
+                .borderless,
+                .nonactivatingPanel,
+                .hudWindow,
+                .utilityWindow,
+                .resizable,
+                .fullSizeContentView
+            ],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+
+        preferences.$recordingEnabled.removeDuplicates().sink { [weak homeModel] enabled in
+            homeModel?.setRecordingEnabled(enabled)
+        }.store(in: &moduleSubscriptions)
+        preferences.$mirrorEnabled.removeDuplicates().sink { [weak homeModel] enabled in
+            homeModel?.setMirrorEnabled(enabled)
+        }.store(in: &moduleSubscriptions)
+
+        panel.delegate = self
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isMovableByWindowBackground = false
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.animationBehavior = .none
+        panel.isReleasedWhenClosed = false
+        panel.acceptsMouseMovedEvents = true
+
+        let rootView = IslandRootView(
+            model: model,
+            shell: shellModel,
+            homeModel: homeModel,
+            applicationsModel: applicationsModel,
+            onSelectDestination: { [weak self] in self?.selectDestination($0) },
+            onSavePrompt: { [weak self] in self?.savePromptDraft() },
+            onSettingsClosed: { [weak self] in self?.activateCurrentDestination() },
+            onRecentApplicationsAppear: { [weak self] in self?.loadApplicationsForCurrentDestination() },
+            onClose: { [weak self] in self?.hide() },
+            onQuit: { NSApp.terminate(nil) }
+        )
+        let hostingView = ClipFlowHostingView(rootView: AppearanceRootView(preferences: preferences, content: rootView))
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.layer?.cornerRadius = WindowMetrics.cornerRadius
+        hostingView.layer?.cornerCurve = .continuous
+        hostingView.layer?.masksToBounds = true
+        panel.contentView = hostingView
+
+        model.onRequestClose = { [weak self] in self?.hide() }
+        // The floating panel would otherwise cover the Finder window we reveal.
+        homeModel.audioRecorder.onWillRevealRecording = { [weak self] in self?.hide() }
+    }
+
+    deinit {
+        eventMonitors.forEach(NSEvent.removeMonitor)
+        pendingPointerExit?.cancel()
+    }
+
+    func toggle() {
+        isPresented ? hide() : showExpanded()
+    }
+
+    func toggleHotKey() {
+        toggle()
+    }
+
+    func show(openSettings: Bool = false) {
+        showExpanded(destination: shellModel.destination, openSettings: openSettings)
+    }
+
+    func showExpanded(
+        destination: ToolDestination? = nil,
+        openSettings: Bool = false,
+        on screen: NSScreen? = nil
+    ) {
+        if openSettings {
+            homeModel.memoLibraryOpen = false
+            homeModel.dailyReviewHistoryOpen = false
+            homeModel.closeRecordingWorkspace()
+        }
+        if !resumeAfterPointerExit || openSettings {
+            model.settingsOpen = openSettings
+        }
+        if let destination { selectDestination(destination) }
+        if !resumeAfterPointerExit {
+            if lastLibraryDestination == .clipboard { model.clipboard.normalizeHistorySelection(preferFirst: true) }
+            else { model.prompts.normalizePromptSelection(preferFirst: true) }
+        }
+        let presentationScreen = screen ?? activeScreen()
+        present(size: expandedSizeForActiveScreen(presentationScreen), on: presentationScreen)
+        if resumeAfterPointerExit {
+            hiddenSheet?.orderFront(nil)
+            hiddenModalWindow?.makeKeyAndOrderFront(nil)
+            hiddenSheet = nil
+            hiddenModalWindow = nil
+            resumeAfterPointerExit = false
+        }
+
+        if shellModel.destination == .prompts || shellModel.destination == .clipboard {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .clipFlowFocusSearch, object: nil)
+            }
+        }
+    }
+
+    func showUpdateSettings() {
+        showExpanded(openSettings: true)
+        model.updateManager.checkForUpdates()
+    }
+
+    func hide(preserveDialogs: Bool = false) {
+        guard isPresented else { return }
+        guard homeModel.flushNotes() else {
+            model.showToast("笔记保存失败，内容已保留，请重试关闭")
+            return
+        }
+        isPresented = false
+        resumeAfterPointerExit = preserveDialogs
+        pendingPointerExit?.cancel()
+        pendingPointerExit = nil
+        visibilityGeneration += 1
+        let generation = visibilityGeneration
+        releaseLocalDevices()
+        if shellModel.destination == .vibehub {
+            shellModel.vibeHubLibrary.flush()
+            if !preserveDialogs { shellModel.vibeHubAgent.discardSession() }
+        }
+        if !preserveDialogs {
+            model.credentials.cancelCredentialEditor()
+            model.credentials.credentialDeleteConfirmationOpen = false
+            homeModel.recordingTranscription?.playback.stop()
+        }
+        // Stop accepting input immediately; the remaining fade is only visual.
+        panel.ignoresMouseEvents = true
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowOut
+        animateWorkspace(opening: false, duration: duration)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.visibilityGeneration == generation, !self.isPresented else { return }
+                self.eventMonitors.forEach(NSEvent.removeMonitor)
+                self.eventMonitors.removeAll()
+                self.panel.orderOut(nil)
+                self.panel.contentView?.layer?.removeAnimation(forKey: "notchReveal")
+                self.panel.alphaValue = 1
+                self.panel.ignoresMouseEvents = false
+                if !preserveDialogs {
+                    self.model.settingsOpen = false
+                    self.homeModel.dailyReviewHistoryOpen = false
+                    self.homeModel.closeRecordingWorkspace()
+                }
+                self.onVisibilityChanged?(false)
+            }
+        }
+    }
+
+    func hideAfterPointerExit() {
+        guard isPresented, !shellModel.isTerminalChoosingFolder,
+              !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else { return }
+        guard homeModel.flushNotes() else {
+            model.showToast("笔记保存失败，内容已保留，请重试关闭")
+            return
+        }
+        hiddenSheet = panel.attachedSheet
+        hiddenSheet?.orderOut(nil)
+        hiddenModalWindow = NSApp.modalWindow
+        hiddenModalWindow?.orderOut(nil)
+        hide(preserveDialogs: true)
+    }
+
+    private func pointerIsOverApplication() -> Bool {
+        let point = NSEvent.mouseLocation
+        return NSApp.windows.contains { window in
+            window.isVisible && (window === panel || window === panel.attachedSheet || window === NSApp.modalWindow || window is TopNotchPanel || window is FileRelayPanel)
+                && window.frame.insetBy(dx: -6, dy: -6).contains(point)
+        }
+    }
+
+    private func handlePointerMovement() {
+        guard isPresented else { return }
+        if shellModel.isTerminalChoosingFolder || pointerIsOverApplication() {
+            pendingPointerExit?.cancel()
+            pendingPointerExit = nil
+            return
+        }
+        guard pendingPointerExit == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingPointerExit = nil
+            guard self.isPresented, !self.shellModel.isTerminalChoosingFolder,
+                  !self.pointerIsOverApplication(),
+                  NSEvent.pressedMouseButtons == 0, !self.panel.inLiveResize else { return }
+            self.hideAfterPointerExit()
+        }
+        pendingPointerExit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + FlowMotion.notchDismissDelay, execute: work)
+    }
+
+    @discardableResult
+    func prepareForTermination() -> Bool {
+        guard homeModel.flushNotes() else {
+            showExpanded(destination: .home)
+            model.showToast("笔记保存失败，内容已保留，请重试保存后退出")
+            return false
+        }
+        homeModel.audioRecorder.finishIfNeeded()
+        releaseLocalDevices()
+        if shellModel.destination == .vibehub {
+            shellModel.vibeHubLibrary.flush()
+            shellModel.vibeHubAgent.discardSession()
+        }
+        return true
+    }
+
+    private func present(size: NSSize, on screen: NSScreen?) {
+        let wasPresented = isPresented
+        visibilityGeneration += 1
+        isPresented = true
+        installEventMonitorsIfNeeded()
+        activateCurrentDestination()
+        panel.ignoresMouseEvents = false
+        onVisibilityChanged?(true)
+        positionAtTopCenter(size: size, on: screen)
+        panel.contentView?.layer?.cornerRadius = WindowMetrics.cornerRadius
+        if !panel.isVisible { panel.alphaValue = 0 }
+        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        let duration = wasPresented || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : FlowMotion.windowIn
+        if !wasPresented { animateWorkspace(opening: true, duration: duration) }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func animateWorkspace(opening: Bool, duration: TimeInterval) {
+        guard let layer = panel.contentView?.layer else { return }
+        let current = layer.animation(forKey: "notchReveal") == nil ? nil : layer.presentation()?.transform
+        layer.removeAnimation(forKey: "notchReveal")
+        guard duration > 0 else { return }
+        // Transform the rendered surface, keeping layout, resize anchors and
+        // the user's saved workspace dimensions stable throughout the reveal.
+        let scale: CGFloat = 0.96
+        var tucked = CATransform3DMakeScale(scale, scale, 1)
+        tucked.m41 = layer.bounds.width * (0.5 - layer.anchorPoint.x) * (1 - scale)
+        let topY: CGFloat = layer.isGeometryFlipped ? 0 : layer.bounds.height
+        tucked.m42 = (topY - layer.bounds.height * layer.anchorPoint.y) * (1 - scale)
+            + (layer.isGeometryFlipped ? -10 : 10)
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = NSValue(caTransform3D: current ?? (opening ? tucked : CATransform3DIdentity))
+        animation.toValue = NSValue(caTransform3D: opening ? CATransform3DIdentity : tucked)
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: opening ? .easeOut : .easeInEaseOut)
+        animation.fillMode = .forwards
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: "notchReveal")
+    }
+
+    private func expandedSizeForActiveScreen(_ screen: NSScreen?) -> NSSize {
+        let preferred = preferences.workspaceSize
+        guard let screen else { return preferred }
+        let visible = screen.visibleFrame
+        let availableHeight = TopNotchGeometry.workspaceTop(on: screen) - visible.minY
+        return NSSize(
+            width: min(max(minimumWorkspaceSize.width, preferred.width), max(1, visible.width - 24)),
+            height: min(max(minimumWorkspaceSize.height, preferred.height), max(1, availableHeight - 16))
+        )
+    }
+
+    private func positionAtTopCenter(size: NSSize, on screen: NSScreen?) {
+        // Fitting to a smaller screen must not replace the user's preferred size.
+        isApplyingPresentationFrame = true
+        defer { isApplyingPresentationFrame = false }
+        panel.minSize = NSSize(width: 1, height: 1)
+        panel.maxSize = NSSize(width: 10_000, height: 10_000)
+        guard let screen else {
+            panel.setContentSize(size)
+            panel.center()
+            panel.minSize = minimumWorkspaceSize
+            return
+        }
+        let visible = screen.visibleFrame
+        let availableHeight = TopNotchGeometry.workspaceTop(on: screen) - visible.minY
+        let fittedSize = NSSize(
+            width: min(size.width, visible.width - 12),
+            height: min(size.height, availableHeight - 12)
+        )
+        let origin = NSPoint(
+            x: visible.midX - fittedSize.width / 2,
+            y: TopNotchGeometry.workspaceTop(on: screen) - fittedSize.height
+        )
+        panel.setFrame(NSRect(origin: origin, size: fittedSize), display: true)
+        panel.minSize = NSSize(
+            width: min(minimumWorkspaceSize.width, fittedSize.width),
+            height: min(minimumWorkspaceSize.height, fittedSize.height)
+        )
+        panel.maxSize = NSSize(width: visible.width - 12, height: availableHeight - 12)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard isPresented, !isApplyingPresentationFrame else { return }
+        preferences.workspaceSize = panel.frame.size
+        // Leave AppKit's drag anchor untouched while the mouse is held down.
+        // Moving the origin here makes the resize edge move away from the cursor.
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard isPresented else { return }
+        // Align to the top center only after AppKit releases the resize edge.
+        alignWorkspaceToTopCenter()
+    }
+
+    private func alignWorkspaceToTopCenter() {
+        guard let screen = panel.screen else { return }
+        let visible = screen.visibleFrame
+        panel.setFrameOrigin(NSPoint(
+            x: visible.midX - panel.frame.width / 2,
+            y: TopNotchGeometry.workspaceTop(on: screen) - panel.frame.height
+        ))
+    }
+
+    private func activeScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    private func selectDestination(_ destination: ToolDestination) {
+        guard shellModel.availableDestinations.contains(destination) else { return }
+        if shellModel.destination == .vibehub { shellModel.vibeHubLibrary.flush() }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            shellModel.selectDestination(destination)
+            if destination != lastLibraryDestination {
+                switch destination {
+                case .prompts:
+                    lastLibraryDestination = destination
+                    model.focusArea = .other
+                    model.prompts.normalizePromptSelection()
+                case .clipboard:
+                    lastLibraryDestination = destination
+                    model.focusArea = .other
+                    model.clipboard.normalizeHistorySelection()
+                case .home, .applications, .vibehub, .terminal: break
+                }
+            }
+            activateCurrentDestination()
+        }
+    }
+
+    private func savePromptDraft() {
+        guard model.prompts.savePromptDraft(), shellModel.destination == .clipboard else { return }
+        selectDestination(.prompts)
+    }
+
+    private func activateCurrentDestination() {
+        guard isPresented, !model.settingsOpen else { return }
+        shellModel.activateTerminalIfSelected()
+        loadApplicationsForCurrentDestination()
+    }
+
+    private func loadApplicationsForCurrentDestination() {
+        guard isPresented, !model.settingsOpen else { return }
+        if shellModel.destination == .applications
+            || (shellModel.destination == .home && homeModel.visibleWidgets.contains(.recentApplications)) {
+            applicationsModel.loadIfNeeded()
+        }
+    }
+
+    private func releaseLocalDevices() {
+        NotificationCenter.default.post(name: .jaimoStopLocalDevices, object: nil)
+    }
+
+    private func installEventMonitorsIfNeeded() {
+        guard eventMonitors.isEmpty else { return }
+
+        let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let keyCode = event.keyCode
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            let handled = MainActor.assumeIsolated {
+                self.handleKey(keyCode: keyCode, flags: flags, key: key)
+            }
+            return handled ? nil : event
+        }
+        let outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleOutsideClick() }
+        }
+        let pointerEvents: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .leftMouseUp, .rightMouseUp]
+        let globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: pointerEvents) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handlePointerMovement() }
+        }
+        let localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: pointerEvents) { [weak self] event in
+            MainActor.assumeIsolated { self?.handlePointerMovement() }
+            return event
+        }
+        eventMonitors = [keyMonitor, outsideClickMonitor, globalPointerMonitor, localPointerMonitor].compactMap { $0 }
+    }
+
+    func handleOutsideClick() {
+        guard isPresented, panel.isVisible, !hasBlockingModal,
+              !shellModel.isTerminalChoosingFolder else { return }
+        hide()
+    }
+
+    private var hasBlockingModal: Bool {
+        model.settingsOpen
+            || model.prompts.promptRunnerOpen
+            || model.prompts.promptDeleteConfirmationOpen
+            || model.credentials.hasOpenDialog
+            || homeModel.dailyReviewHistoryOpen
+            || homeModel.recordingWorkspaceOpen
+            || (shellModel.destination == .vibehub && shellModel.vibeHubAgent.panel != .closed)
+    }
+
+    private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String) -> Bool {
+        guard isPresented else { return false }
+        if ScreenshotShortcutRecorder.isRecording { return false }
+        let command = flags.contains(.command)
+        let shift = flags.contains(.shift)
+        let option = flags.contains(.option)
+
+        if command, routeStandardTextCommand(key) {
+            return true
+        }
+
+        if command && key == "q" {
+            NSApp.terminate(nil)
+            return true
+        }
+
+        if shellModel.destination == .vibehub, shellModel.vibeHubAgent.panel != .closed {
+            if keyCode == UInt16(kVK_Escape) {
+                shellModel.vibeHubAgent.dismissPanel()
+                return true
+            }
+            if command && keyCode == UInt16(kVK_Return) {
+                switch shellModel.vibeHubAgent.panel {
+                case .composer: shellModel.vibeHubAgent.organizeForPreview()
+                case .preview: shellModel.vibeHubAgent.saveReviewedPhrase()
+                case .settings: shellModel.vibeHubAgent.saveSettings()
+                case .closed: break
+                }
+                return true
+            }
+            return false
+        }
+
+        if command && key == "," {
+            guard !model.libraryDialogOpen else { return true }
+            model.settingsOpen.toggle()
+            return true
+        }
+
+        if model.credentials.credentialEditorOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.credentials.cancelCredentialEditor()
+                return true
+            }
+            if command && key == "s" {
+                model.credentials.saveCredentialDraft()
+                return true
+            }
+            return false
+        }
+
+        if model.credentials.credentialDeleteConfirmationOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.credentials.credentialDeleteConfirmationOpen = false
+                return true
+            }
+            return false
+        }
+
+        if model.prompts.promptDeleteConfirmationOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.prompts.promptDeleteConfirmationOpen = false
+                return true
+            }
+            return false
+        }
+
+        if model.prompts.promptRunnerOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.prompts.promptRunnerOpen = false
+                return true
+            }
+            return false
+        }
+
+        if model.prompts.promptEditorOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.prompts.promptEditorOpen = false
+                return true
+            }
+            if command && key == "s" {
+                savePromptDraft()
+                return true
+            }
+            return false
+        }
+
+        if model.settingsOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                model.settingsOpen = false
+                return true
+            }
+            return false
+        }
+
+        if homeModel.memoLibraryOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                homeModel.closeMemoLibrary()
+                return true
+            }
+            return false
+        }
+
+        if homeModel.dailyReviewHistoryOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                homeModel.dailyReviewHistoryOpen = false
+                return true
+            }
+            return false
+        }
+
+        if homeModel.recordingWorkspaceOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                if let transcription = homeModel.recordingTranscription, transcription.showingSettings {
+                    transcription.showingSettings = false
+                } else {
+                    homeModel.closeRecordingWorkspace()
+                }
+                return true
+            }
+            return false
+        }
+
+        if command, let destination = destinationForShortcut(key) {
+            // The panel is already visible: changing tabs must not reposition
+            // the window, repeat presentation work or reset list selection.
+            selectDestination(destination)
+            return true
+        }
+
+        // Terminal programs need Escape and the remaining keys without panel shortcuts.
+        if shellModel.destination == .terminal { return false }
+
+        if shellModel.destination == .home, option, homeModel.editingWidget != nil {
+            if keyCode == UInt16(kVK_UpArrow) {
+                homeModel.moveSelectedWidget(by: -1)
+                return true
+            }
+            if keyCode == UInt16(kVK_DownArrow) {
+                homeModel.moveSelectedWidget(by: 1)
+                return true
+            }
+        }
+
+        if command && key == "f" {
+            switch shellModel.destination {
+            case .vibehub:
+                NotificationCenter.default.post(name: .jaimoFocusVibeHubSearch, object: nil)
+                return true
+            case .applications:
+                NotificationCenter.default.post(name: .jaimoFocusApplicationSearch, object: nil)
+                return true
+            case .prompts, .clipboard:
+                NotificationCenter.default.post(name: .clipFlowFocusSearch, object: nil)
+                DispatchQueue.main.async { [weak panel] in
+                    panel?.firstResponder?.tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
+                }
+                return true
+            case .home, .terminal:
+                return false
+            }
+        }
+
+        if command && key == "n", shellModel.destination == .clipboard, model.clipboard.isCredentialGroup {
+            model.credentials.beginCreateCredential()
+            return true
+        }
+        if command && key == "e", shellModel.destination == .clipboard, model.clipboard.isCredentialGroup {
+            model.credentials.beginEditCredential()
+            return true
+        }
+
+        if command && key == "n" {
+            if shellModel.destination == .vibehub {
+                if shellModel.vibeHubLibrary.createPhrase() != nil {
+                    NotificationCenter.default.post(name: .jaimoFocusVibeHubTitle, object: nil)
+                }
+                return true
+            }
+            showExpanded(destination: .prompts)
+            model.prompts.beginCreatePrompt()
+            return true
+        }
+
+        if command && key == "e", shellModel.destination == .prompts {
+            model.prompts.beginEditSelectedPrompt()
+            return true
+        }
+
+        if keyCode == UInt16(kVK_Escape) {
+            if shellModel.destination == .clipboard, !model.clipboard.query.isEmpty {
+                model.clipboard.query = ""
+            } else if shellModel.destination == .prompts, !model.prompts.promptQuery.isEmpty {
+                model.prompts.promptQuery = ""
+            } else if shellModel.destination == .vibehub, !shellModel.vibeHubLibrary.query.isEmpty {
+                shellModel.vibeHubLibrary.query = ""
+            } else {
+                hide()
+            }
+            return true
+        }
+
+        if shellModel.destination == .vibehub, command && key == "s" {
+            shellModel.vibeHubLibrary.flush()
+            return true
+        }
+
+        guard shellModel.destination == .prompts || shellModel.destination == .clipboard else {
+            return false
+        }
+        let isClipboard = shellModel.destination == .clipboard
+        let isCredentialGroup = isClipboard && model.clipboard.isCredentialGroup
+        if !isCredentialGroup {
+            guard case .ready = model.phase else { return false }
+        }
+
+        if command && key == "s" {
+            if isClipboard { model.clipboard.toggleFavorite() }
+            else { model.prompts.togglePromptFavorite() }
+            return true
+        }
+        if command && (keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete)) {
+            if isClipboard { model.deleteClipboardSelection() }
+            else { model.prompts.requestDeletePrompt() }
+            return true
+        }
+
+        switch keyCode {
+        case UInt16(kVK_Return) where isCredentialGroup,
+             UInt16(kVK_ANSI_KeypadEnter) where isCredentialGroup:
+            model.copyClipboardSelection()
+            return true
+        case UInt16(kVK_UpArrow), UInt16(kVK_DownArrow):
+            let offset = keyCode == UInt16(kVK_UpArrow) ? -1 : 1
+            if isClipboard { model.moveClipboardSelection(offset) }
+            else { model.prompts.movePromptSelection(offset) }
+            return true
+        case UInt16(kVK_LeftArrow) where model.focusArea == .tabs,
+             UInt16(kVK_RightArrow) where model.focusArea == .tabs,
+             UInt16(kVK_Tab) where model.focusArea == .other:
+            let offset = keyCode == UInt16(kVK_LeftArrow) || (keyCode == UInt16(kVK_Tab) && shift) ? -1 : 1
+            if isClipboard { model.cycleClipboardFilter(offset) }
+            else { model.prompts.cyclePromptScope(offset) }
+            return true
+        case UInt16(kVK_Home) where model.focusArea == .tabs:
+            if isClipboard { model.setClipboardFilter(.all) }
+            else { model.prompts.setPromptScope(.all) }
+            return true
+        case UInt16(kVK_End) where model.focusArea == .tabs:
+            if isClipboard { model.setClipboardFilter(.apiKey) }
+            else if let last = model.prompts.promptScopes.last { model.prompts.setPromptScope(last) }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func destinationForShortcut(_ key: String) -> ToolDestination? {
+        switch key {
+        case "1": return .home
+        case "2": return .applications
+        case "3": return .prompts
+        case "4": return .clipboard
+        case "5": return .vibehub
+        case "6" where shellModel.availableDestinations.contains(.terminal): return .terminal
+        default: return nil
+        }
+    }
+
+    private func routeStandardTextCommand(_ key: String) -> Bool {
+        let action: Selector
+        switch key {
+        case "a": action = #selector(NSText.selectAll(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "v": action = #selector(NSText.paste(_:))
+        case "x": action = #selector(NSText.cut(_:))
+        default: return false
+        }
+        guard let responder = panel.firstResponder else { return false }
+        return responder.tryToPerform(action, with: nil)
+    }
+}

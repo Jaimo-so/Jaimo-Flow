@@ -1,5 +1,8 @@
 import AppKit
+import Carbon
+import ClipFlowKit
 import SwiftUI
+import WebKit
 @testable import ClipFlow
 
 enum PanelTestError: Error {
@@ -8,6 +11,337 @@ enum PanelTestError: Error {
 
 func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     guard condition() else { throw PanelTestError.failed(message) }
+}
+
+@MainActor
+func findTerminalWebView(in view: NSView) -> WKWebView? {
+    if let webView = view as? WKWebView { return webView }
+    return view.subviews.lazy.compactMap { findTerminalWebView(in: $0) }.first
+}
+
+@MainActor
+func testModulePreferences(directory: URL) async throws {
+    let suite = "ClipFlowPanelSelfTest.Modules.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preferences = PreferencesStore(defaults: defaults)
+    try require(preferences.terminalEnabled && preferences.recordingEnabled && preferences.mirrorEnabled,
+                "新用户及无模块偏好的旧用户应默认启用三个模块")
+
+    let recordings = directory.appendingPathComponent("ModuleRecordings")
+    try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+    let recording = recordings.appendingPathComponent("2026-11-26.m4a")
+    let recordingBytes = Data([0])
+    try recordingBytes.write(to: recording)
+    let mirror = directory.appendingPathComponent("ModuleMirror")
+    try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+    let cover = mirror.appendingPathComponent("cover.tiff")
+    let image = NSImage(size: NSSize(width: 2, height: 2), flipped: false) { rect in
+        NSColor.white.setFill()
+        rect.fill()
+        return true
+    }
+    guard let coverBytes = image.tiffRepresentation else { throw PanelTestError.failed("无法生成临时镜子封面") }
+    try coverBytes.write(to: cover)
+    let memoLibrary = MemoLibraryModel(fileURL: directory.appendingPathComponent("ModuleMemos.json"))
+    let dailyReview = DailyReviewModel(fileURL: directory.appendingPathComponent("ModuleReviews.json"))
+    let home = HomeDashboardModel(defaults: defaults, memoLibrary: memoLibrary, recordingsDirectory: recordings,
+                                  dailyReview: dailyReview, mirrorDirectory: mirror)
+    home.hide(.recentApplications)
+    let app = AppModel(preferences: preferences)
+    let controller = PanelController(model: app, preferences: preferences, homeModel: home)
+    defer {
+        controller.hide()
+        finishWindowAnimation(controller.panel)
+    }
+    let shell = controller.shellModel
+    try require(shell.availableDestinations == ToolDestination.allCases, "模块默认开启时应保留所有导航")
+    try require(home.visibleWidgets.contains(.camera) && home.visibleWidgets.contains(.audioRecorder),
+                "镜子与录音应按默认组件布局显示")
+
+    controller.showExpanded(destination: .terminal)
+    try await Task.sleep(nanoseconds: 150_000_000)
+    guard let retiredSession = shell.terminalSession else { throw PanelTestError.failed("进入终端后未加载会话") }
+    try require(controller.panel.contentView.flatMap(findTerminalWebView(in:)) != nil, "终端 WKWebView 未挂载")
+
+    preferences.terminalEnabled = false
+    try require(shell.destination == .home && !shell.availableDestinations.contains(.terminal),
+                "关闭终端后未回落到首页或仍显示终端导航")
+    try require(!shell.isTerminalSessionLoaded && retiredSession.webView == nil,
+                "关闭终端后仍保留会话或会话仍持有 WKWebView")
+    try require(defaults.string(forKey: "island.lastDestination") == ToolDestination.home.rawValue,
+                "关闭当前终端后未持久化回落的首页")
+    let unmountDeadline = Date().addingTimeInterval(2)
+    while controller.panel.contentView.flatMap(findTerminalWebView(in:)) != nil && Date() < unmountDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try require(controller.panel.contentView.flatMap(findTerminalWebView(in:)) == nil, "关闭终端后 WKWebView 仍挂载在窗口中")
+    controller.showExpanded(destination: .terminal)
+    try require(shell.destination == .home && !shell.isTerminalSessionLoaded, "禁用后显式导航重新加载了终端")
+    guard let shortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                                          timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: controller.panel.windowNumber, context: nil,
+                                          characters: "6", charactersIgnoringModifiers: "6", isARepeat: false,
+                                          keyCode: UInt16(kVK_ANSI_6)) else {
+        throw PanelTestError.failed("无法构造终端快捷键事件")
+    }
+    NSApp.sendEvent(shortcut)
+    try require(shell.destination == .home && !shell.isTerminalSessionLoaded, "禁用后 ⌘6 仍打开终端")
+
+    defaults.set(ToolDestination.terminal.rawValue, forKey: "island.lastDestination")
+    let restoredShell = IslandShellModel(preferences: PreferencesStore(defaults: defaults))
+    restoredShell.activateTerminalIfSelected()
+    try require(restoredShell.destination == .home && !restoredShell.isTerminalSessionLoaded
+                && defaults.string(forKey: "island.lastDestination") == ToolDestination.home.rawValue,
+                "启动时恢复被禁用的终端页面没有回落到首页")
+
+    controller.showExpanded(destination: .home)
+    home.openRecordingWorkspace(selecting: recording)
+    guard let retiredTranscription = home.recordingTranscription else { throw PanelTestError.failed("打开录音工作台未加载转写管理器") }
+    try require(home.recordingWorkspaceOpen && retiredTranscription.playback.currentURL == recording,
+                "录音关闭前未建立工作台和播放选择")
+    let initialHidden = home.hiddenWidgets
+    let initialStoredHidden = defaults.stringArray(forKey: "home.hiddenWidgets")
+    preferences.recordingEnabled = false
+    preferences.mirrorEnabled = false
+    try require(!home.recordingWorkspaceOpen && !home.isRecordingTranscriptionLoaded
+                && retiredTranscription.playback.currentURL == nil && !retiredTranscription.playback.isPlaying,
+                "关闭录音后工作台、转写管理器或播放器未释放")
+    home.openRecordingWorkspace(selecting: recording)
+    home.audioRecorder.onDidFinishRecording?(recording)
+    try require(!home.recordingWorkspaceOpen && !home.isRecordingTranscriptionLoaded,
+                "录音模块关闭时仍可打开工作台或加载转写")
+    for widget in [HomeDashboardModel.WidgetID.audioRecorder, .camera] {
+        try require(!home.visibleWidgets.contains(widget) && !home.restorableWidgets.contains(widget),
+                    "关闭的模块仍出现在首页或恢复菜单")
+    }
+    try require(home.hiddenWidgets == initialHidden && defaults.stringArray(forKey: "home.hiddenWidgets") == initialStoredHidden,
+                "关闭模块改写了原有隐藏组件偏好")
+    let savedRecording = try Data(contentsOf: recording)
+    try require(savedRecording == recordingBytes, "关闭录音后本地录音文件未保留")
+    let savedCover = try Data(contentsOf: cover)
+    try require(savedCover == coverBytes, "关闭镜子后封面内容发生变化")
+    try require(home.mirrorPhotoURL?.standardizedFileURL.path == cover.standardizedFileURL.path,
+                "关闭镜子后未保留原封面路径")
+    let disabled = PreferencesStore(defaults: defaults)
+    try require(!disabled.terminalEnabled && !disabled.recordingEnabled && !disabled.mirrorEnabled
+                && !defaults.bool(forKey: "module.terminalEnabled")
+                && !defaults.bool(forKey: "module.recordingEnabled") && !defaults.bool(forKey: "module.mirrorEnabled"),
+                "三个模块开关的关闭状态未通过指定键持久化")
+    let disabledHome = HomeDashboardModel(defaults: defaults, memoLibrary: memoLibrary, recordingsDirectory: recordings,
+                                          dailyReview: dailyReview, mirrorDirectory: mirror)
+    let disabledController = PanelController(model: AppModel(preferences: disabled), preferences: disabled, homeModel: disabledHome)
+    try require(!disabledController.shellModel.availableDestinations.contains(.terminal)
+                && !disabledHome.visibleWidgets.contains(.audioRecorder) && !disabledHome.visibleWidgets.contains(.camera),
+                "新面板没有应用已持久化的关闭状态")
+
+    preferences.terminalEnabled = true
+    preferences.recordingEnabled = true
+    preferences.mirrorEnabled = true
+    try require(shell.availableDestinations == ToolDestination.allCases && shell.destination == .home && !shell.isTerminalSessionLoaded,
+                "重新启用终端后未恢复入口，或提前切页并创建会话")
+    try require(home.visibleWidgets.contains(.audioRecorder) && home.visibleWidgets.contains(.camera)
+                && !home.isRecordingTranscriptionLoaded && !home.camera.isRunning,
+                "重新启用后未恢复原可见组件，或提前启动录音转写或摄像头")
+    NSApp.sendEvent(shortcut)
+    try require(shell.destination == .terminal && shell.terminalSession != nil && shell.terminalSession !== retiredSession,
+                "重新启用后 ⌘6 未加载新的终端会话")
+    controller.showExpanded(destination: .home)
+    home.openRecordingWorkspace(selecting: recording)
+    try require(home.recordingWorkspaceOpen && home.recordingTranscription != nil && home.recordingTranscription !== retiredTranscription,
+                "重新启用录音后未按需创建新的转写管理器")
+    home.closeRecordingWorkspace()
+
+    home.hide(.audioRecorder)
+    home.hide(.camera)
+    let storedHidden = defaults.stringArray(forKey: "home.hiddenWidgets")
+    preferences.recordingEnabled = false
+    preferences.mirrorEnabled = false
+    home.restore(.audioRecorder)
+    home.restore(.camera)
+    try require(!home.restorableWidgets.contains(.audioRecorder) && !home.restorableWidgets.contains(.camera),
+                "关闭的模块仍可从恢复菜单找回")
+    preferences.recordingEnabled = true
+    preferences.mirrorEnabled = true
+    try require(home.hiddenWidgets == initialHidden.union([.audioRecorder, .camera])
+                && defaults.stringArray(forKey: "home.hiddenWidgets") == storedHidden
+                && !home.visibleWidgets.contains(.audioRecorder) && !home.visibleWidgets.contains(.camera)
+                && home.restorableWidgets.contains(.audioRecorder) && home.restorableWidgets.contains(.camera),
+                "重新开启模块后未还原用户此前隐藏的组件布局")
+    let reenabled = PreferencesStore(defaults: defaults)
+    try require(reenabled.terminalEnabled && reenabled.recordingEnabled && reenabled.mirrorEnabled,
+                "三个模块开关的重新启用状态未持久化")
+    preferences.terminalEnabled = false
+    try require(shell.destination == .home && !shell.isTerminalSessionLoaded,
+                "在其他页面关闭已加载的终端时改变了页面或保留了会话")
+}
+
+@MainActor
+func testClipboardIncrementalUpdates(preferences: PreferencesStore, directory: URL) async throws {
+    let store = try SQLiteClipStore(baseDirectory: directory.appendingPathComponent("Clipboard"))
+    func capture(_ title: String, at timestamp: TimeInterval) -> CapturedClip {
+        CapturedClip(kind: .text, category: .text, sourceAppName: "SelfTest", sourceBundleID: "com.clipflow.selftest",
+                     copiedAt: Date(timeIntervalSince1970: timestamp), title: title, fullText: title,
+                     meta: [], contentHash: ClipClassifier.hash(Data(title.utf8)))
+    }
+
+    let favorite = try store.insert(capture("收藏", at: 0))!
+    try store.setFavorite(id: favorite.id, isFavorite: true)
+    for timestamp in 1...ClipboardLibraryModel.historyLimit {
+        try store.insert(capture("历史 \(timestamp)", at: TimeInterval(timestamp)))
+    }
+
+    let appModel = AppModel(preferences: preferences, store: store)
+    appModel.load()
+    let deadline = Date().addingTimeInterval(3)
+    while appModel.clipboard.items.isEmpty && Date() < deadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try require(appModel.clipboard.items.count == ClipboardLibraryModel.historyLimit + 1, "加载旧库时收藏占用了普通历史额度")
+    _ = appModel.clipboard.filteredItems
+
+    var unrelatedChanges = 0
+    let observations = [
+        appModel.objectWillChange.sink { unrelatedChanges += 1 },
+        appModel.prompts.objectWillChange.sink { unrelatedChanges += 1 },
+        appModel.credentials.objectWillChange.sink { unrelatedChanges += 1 }
+    ]
+    defer { observations.forEach { $0.cancel() } }
+
+    let newest = capture("同一时间的新记录", at: TimeInterval(ClipboardLibraryModel.historyLimit))
+    let captures = [newest, newest, capture("立即淘汰的旧记录", at: -1), capture("插在中间的记录", at: 75.5)]
+    for captured in captures {
+        appModel.receive(captured)
+        let storedItems = try store.loadAll()
+        try require(appModel.clipboard.items == storedItems && appModel.clipboard.filteredItems == storedItems, "增量更新后应用列表或缓存与 SQLite 不一致")
+        try require(appModel.clipboard.items.first?.title == newest.title && appModel.clipboard.selectedID == storedItems.first?.id,
+                    "相同时间的新记录没有置顶或选中")
+        try require(appModel.clipboard.items.count == ClipboardLibraryModel.historyLimit + 1 && appModel.clipboard.items.last?.id == favorite.id,
+                    "增量更新未保留收藏及 150 条普通历史")
+    }
+    try require(unrelatedChanges == 0, "剪贴板增量更新触发了协调器或其他资料库的观察通知")
+}
+
+@MainActor
+func testLibraryShortcuts(directory: URL) async throws {
+    let suite = "ClipFlowPanelSelfTest.Shortcuts.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    let preferences = PreferencesStore(defaults: defaults)
+    preferences.closeAfterCopy = false
+    let store = try SQLiteClipStore(baseDirectory: directory.appendingPathComponent("ShortcutLibrary"))
+    let credentials = CredentialStore(service: suite)
+    let credentialID = try credentials.save(id: nil, title: "示例密钥", secret: "test-secret")
+    let pasteboard = NSPasteboard(name: .init(suite))
+    defer {
+        try? credentials.delete(id: credentialID)
+        pasteboard.releaseGlobally()
+        defaults.removePersistentDomain(forName: suite)
+    }
+    let captured = CapturedClip(kind: .text, category: .text, sourceAppName: "SelfTest", sourceBundleID: "com.clipflow.selftest",
+                                copiedAt: Date(), title: "剪贴板正文", fullText: "剪贴板正文",
+                                meta: [], contentHash: ClipClassifier.hash(Data("剪贴板正文".utf8)))
+    _ = try store.insert(captured)
+    _ = try store.createPrompt(title: "既有提示词", body: "既有正文", groupName: "自检", variables: [])
+    let model = AppModel(preferences: preferences, credentialStore: credentials, store: store)
+    model.clipboardMonitor = ClipboardMonitor(pasteboard: pasteboard)
+    let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("ShortcutMemos.json")))
+    let controller = PanelController(model: model, preferences: preferences, homeModel: home)
+    defer {
+        controller.hide()
+        finishWindowAnimation(controller.panel)
+    }
+
+    func press(_ keyCode: Int, _ characters: String, modifiers: NSEvent.ModifierFlags = [], keyEquivalent: Bool = false) throws {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: controller.panel.windowNumber, context: nil,
+                                           characters: characters, charactersIgnoringModifiers: characters,
+                                           isARepeat: false, keyCode: UInt16(keyCode)) else {
+            throw PanelTestError.failed("无法构造自检键盘事件")
+        }
+        if keyEquivalent {
+            // Preview buttons receive Return through AppKit's key-equivalent dispatch.
+            _ = controller.panel.performKeyEquivalent(with: event)
+        } else {
+            NSApp.sendEvent(event)
+        }
+    }
+
+    func pressReturnWhenRendered(until actionRan: () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        // A ready model can precede SwiftUI registering the preview's Return shortcut.
+        repeat {
+            controller.panel.contentView?.layoutSubtreeIfNeeded()
+            try press(kVK_Return, "\r", keyEquivalent: true)
+            if actionRan() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        } while clock.now < deadline
+    }
+
+    model.load()
+    controller.showExpanded(destination: .clipboard)
+    let deadline = Date().addingTimeInterval(3)
+    while (model.clipboard.items.isEmpty || model.focusArea != .search) && Date() < deadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try require(model.clipboard.selectedItem?.title == "剪贴板正文", "剪切板展开后未选中首条记录")
+    model.focusArea = .other
+    try press(kVK_ANSI_F, "f", modifiers: .command)
+    try require(model.focusArea == .search, "⌘F 未聚焦剪切板搜索框")
+    model.clipboard.query = "正文"
+    try press(kVK_Escape, "\u{1b}")
+    try require(model.clipboard.query.isEmpty && controller.isVisible, "ESC 未先清空剪切板搜索")
+    try await pressReturnWhenRendered { pasteboard.string(forType: .string) != nil }
+    try require(pasteboard.string(forType: .string) == captured.fullText, "↵ 未复制选中的剪贴板记录")
+
+    model.beginPromptFromClipboard()
+    model.prompts.promptDraftTitle = ""
+    try press(kVK_ANSI_S, "s", modifiers: .command)
+    try require(model.prompts.promptEditorOpen && controller.shellModel.destination == .clipboard, "保存失败后丢失编辑器或离开剪切板")
+    model.prompts.promptDraftTitle = "从剪贴板保存"
+    try press(kVK_ANSI_S, "s", modifiers: .command)
+    try require(!model.prompts.promptEditorOpen && controller.shellModel.destination == .prompts
+                && model.prompts.selectedPrompt?.body == captured.fullText, "保存剪贴板记录后未进入并选中新提示词")
+    let savedID = model.prompts.selectedPromptID
+    try press(kVK_UpArrow, "\u{f700}")
+    try require(model.prompts.selectedPromptID != savedID, "↑ 未移动提示词选中项")
+    try press(kVK_DownArrow, "\u{f701}")
+    try require(model.prompts.selectedPromptID == savedID, "↓ 未回到刚保存的提示词")
+    pasteboard.clearContents()
+    let previousUseCount = model.prompts.selectedPrompt?.useCount
+    try await pressReturnWhenRendered { model.prompts.selectedPrompt?.useCount != previousUseCount }
+    try require(model.prompts.selectedPrompt?.useCount != previousUseCount
+                && pasteboard.string(forType: .string) == captured.fullText, "↵ 未使用选中的提示词")
+
+    try press(kVK_ANSI_4, "4", modifiers: .command)
+    model.focusArea = .other
+    try press(kVK_Tab, "\t", modifiers: .shift)
+    try require(model.clipboard.isCredentialGroup, "⇧Tab 未切换到 API Key 分组")
+    try press(kVK_Return, "\r")
+    try require(pasteboard.string(forType: .string) == "test-secret", "↵ 未复制选中的 API Key")
+    try press(kVK_ANSI_E, "e", modifiers: .command)
+    try require(model.credentials.editingCredentialID == credentialID && model.credentials.credentialEditorOpen, "⌘E 未打开 API Key 编辑器")
+    try press(kVK_Escape, "\u{1b}")
+    try press(kVK_ANSI_N, "n", modifiers: .command)
+    try require(model.credentials.editingCredentialID == nil && model.credentials.credentialEditorOpen, "⌘N 未新建 API Key")
+    try press(kVK_Escape, "\u{1b}")
+    try press(kVK_Delete, "\u{7f}", modifiers: .command)
+    try require(model.credentials.credentialDeleteConfirmationOpen, "⌘⌫ 未打开 API Key 删除确认")
+    try press(kVK_Escape, "\u{1b}")
+
+    try press(kVK_ANSI_3, "3", modifiers: .command)
+    try press(kVK_ANSI_S, "s", modifiers: .command)
+    try require(model.prompts.selectedPromptID == savedID && model.prompts.selectedPrompt?.isFavorite == true, "剪切板停在 API Key 分组时，⌘S 未收藏提示词")
+    try press(kVK_ANSI_E, "e", modifiers: .command)
+    try require(model.prompts.editingPromptID == savedID && model.prompts.promptEditorOpen, "⌘E 未编辑提示词")
+    try press(kVK_Escape, "\u{1b}")
+    try press(kVK_Delete, "\u{7f}", modifiers: .command)
+    try require(model.prompts.promptDeleteConfirmationOpen && !model.credentials.credentialDeleteConfirmationOpen, "⌘⌫ 路由到了错误的删除确认")
+    try press(kVK_Escape, "\u{1b}")
+    try press(kVK_ANSI_N, "n", modifiers: .command)
+    try require(model.prompts.editingPromptID == nil && model.prompts.promptEditorOpen, "⌘N 未打开新建提示词")
+    try press(kVK_Escape, "\u{1b}")
 }
 
 @MainActor
@@ -121,15 +455,15 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     model.settingsOpen = false
 
     controller.showExpanded(destination: .prompts)
-    model.promptEditorOpen = true
-    model.promptDraftBody = "保留草稿"
+    model.prompts.promptEditorOpen = true
+    model.prompts.promptDraftBody = "保留草稿"
     controller.hideAfterPointerExit()
-    try require(!controller.isVisible && model.promptEditorOpen, "移出时提示词弹窗状态丢失")
-    try require(model.promptDraftBody == "保留草稿", "移出时丢失提示词草稿")
+    try require(!controller.isVisible && model.prompts.promptEditorOpen, "移出时提示词弹窗状态丢失")
+    try require(model.prompts.promptDraftBody == "保留草稿", "移出时丢失提示词草稿")
     finishWindowAnimation(controller.panel)
     controller.showExpanded(destination: .prompts)
-    try require(model.promptEditorOpen && model.promptDraftBody == "保留草稿", "重新打开未恢复提示词弹窗和草稿")
-    model.promptEditorOpen = false
+    try require(model.prompts.promptEditorOpen && model.prompts.promptDraftBody == "保留草稿", "重新打开未恢复提示词弹窗和草稿")
+    model.prompts.promptEditorOpen = false
     controller.hide()
     finishWindowAnimation(controller.panel)
 
@@ -143,6 +477,7 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     try await Task.sleep(nanoseconds: 450_000_000)
     try require(controller.isVisible && controller.panel.isVisible && !controller.panel.ignoresMouseEvents,
                 "快速收起重开被旧动画关闭或丢失输入")
+    try require(controller.hasEventMonitors, "快速收起重开时旧动画卸载了事件监听")
     try require(controller.panel.frame.size == sizeBefore, "展开动画改变了工作区尺寸")
 
     let sourceA = directory.appendingPathComponent("source-a.txt")
@@ -209,6 +544,7 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     try await Task.sleep(nanoseconds: 400_000_000)
     try require(notch.relayPanel.isVisible, "文件中转面板内操作误收起")
     notch.relayModel.isPinned = true
+    try await verifyAppearance(notch.relayPanel, preferences: controller.preferences)
     notch.handlePointerEvent(type: .leftMouseDown, at: outside, dragChangeCount: baseline, hasFileURL: false)
     try require(notch.relayPanel.isVisible, "固定时外部点击关闭小兜")
     notch.handlePointer(at: outside)
@@ -234,25 +570,78 @@ func testTopNotch(controller: PanelController, model: AppModel, defaults: UserDe
     try require(!notch.notchPanel.isVisible && !controller.isVisible, "隐藏入口后延迟悬停仍打开工具站")
     notch.isEnabled = true
     try require(notch.notchPanel.isVisible, "隐藏后无法恢复入口")
+
+    controller.showExpanded(destination: .home)
+    try await verifyAppearance(controller.panel, preferences: controller.preferences)
+}
+
+@MainActor
+func verifyAppearance(_ panel: NSPanel, preferences: PreferencesStore) async throws {
+    let originalSystemAppearance = NSApp.appearance
+    let originalPreference = preferences.appearance
+    defer {
+        NSApp.appearance = originalSystemAppearance
+        preferences.appearance = originalPreference
+    }
+
+    func hasMaterial(_ view: NSView, named name: NSAppearance.Name) -> Bool {
+        if let effect = view as? NSVisualEffectView, effect.state == .active,
+           effect.blendingMode == .behindWindow, effect.appearance?.name == name { return true }
+        return view.subviews.contains { hasMaterial($0, named: name) }
+    }
+
+    guard let root = panel.contentView else { throw PanelTestError.failed("外观测试缺少面板视图") }
+    for system in [NSAppearance.Name.aqua, .darkAqua] {
+        NSApp.appearance = NSAppearance(named: system)
+        let forced: FlowAppearance = system == .aqua ? .black : .light
+        for preference in [forced, .system] {
+            preferences.appearance = preference
+            try await Task.sleep(nanoseconds: 150_000_000)
+            let expected: NSAppearance.Name = preference == .system ? system : (forced == .black ? .darkAqua : .aqua)
+            try require(hasMaterial(root, named: expected), "原生材质没有切换到预期外观：\(preference.title)、\(system)")
+        }
+    }
 }
 
 @MainActor
 func runTests() async throws {
     _ = NSApplication.shared
+    let standardDestinationBefore = UserDefaults.standard.string(forKey: "island.lastDestination")
     let suite = "ClipFlowPanelSelfTest.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
+    for (raw, expected) in [("system", FlowAppearance.system), ("black", .black), ("light", .light)] {
+        defaults.set(raw, forKey: "appearance")
+        try require(PreferencesStore(defaults: defaults).appearance == expected, "无法读取外观偏好 \(raw)")
+    }
+    defaults.removeObject(forKey: "appearance")
     let preferences = PreferencesStore(defaults: defaults)
     try require(preferences.workspaceSize == NSSize(width: 849, height: 575), "首次启动的默认尺寸不正确")
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClipFlowPanelNotes-\(UUID().uuidString)")
+    let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("ClipFlowPanelNotes-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let memoURL = directory.appendingPathComponent("Memos/memos.json")
-    let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: memoURL))
+    let recordings = directory.appendingPathComponent("Recordings")
+    try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+    let latestRecording = recordings.appendingPathComponent("2026-11-26.m4a")
+    try Data([0]).write(to: latestRecording)
+    let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: memoURL), recordingsDirectory: recordings)
+    home.hide(.recentApplications)
     let appModel = AppModel(preferences: preferences)
     let controller = PanelController(model: appModel, preferences: preferences, homeModel: home)
     defer { controller.panel.orderOut(nil) }
 
+    try require(!controller.hasEventMonitors && !controller.shellModel.isTerminalSessionLoaded && !home.isRecordingTranscriptionLoaded,
+                "创建隐藏面板时提前注册监听或初始化终端、录音转写")
+    try require(!controller.shellModel.isTerminalChoosingFolder, "未打开的终端不应处于选文件夹状态")
+    home.audioRecorder.onDidFinishRecording?(latestRecording)
+    try require(!home.isRecordingTranscriptionLoaded, "未配置自动转写时完成录音提前初始化转写管理器")
+
     controller.showExpanded()
+    try require(controller.hasEventMonitors, "展开后未注册事件监听")
+    try require(!controller.applicationsModel.isLoading && controller.applicationsModel.applications.isEmpty,
+                "隐藏最近使用组件后展开首页仍扫描了应用目录")
+    try require(controller.panel.contentView?.layer?.cornerRadius == 30, "窗口外壳与玻璃圆角不一致")
     try requireCentered(controller.panel, "首次展开")
     try require(controller.panel.minSize.width < controller.panel.maxSize.width, "窗口宽度仍被锁定")
     try require(controller.panel.minSize.height < controller.panel.maxSize.height, "窗口高度仍被锁定")
@@ -275,7 +664,9 @@ func runTests() async throws {
     home.memoLibraryOpen = true
     controller.handleOutsideClick()
     finishWindowAnimation(controller.panel)
-    try require(!controller.panel.isVisible, "备忘录打开时点击软件外部没有收起窗口：接受输入=\(!controller.panel.ignoresMouseEvents)，透明度=\(controller.panel.alphaValue)，设置=\(appModel.settingsOpen)，提示词编辑=\(appModel.promptEditorOpen)，复盘=\(home.dailyReviewHistoryOpen)")
+    try require(!controller.hasEventMonitors && !controller.shellModel.isTerminalSessionLoaded && !home.isRecordingTranscriptionLoaded,
+                "点击外部收起后仍保留监听，或隐藏路径提前初始化了终端、录音转写")
+    try require(!controller.panel.isVisible, "备忘录打开时点击软件外部没有收起窗口：接受输入=\(!controller.panel.ignoresMouseEvents)，透明度=\(controller.panel.alphaValue)，设置=\(appModel.settingsOpen)，提示词编辑=\(appModel.prompts.promptEditorOpen)，复盘=\(home.dailyReviewHistoryOpen)")
     try require(home.memoLibraryOpen && home.memoLibrary.selectedID == memoID, "收起窗口重置了备忘录界面或选中记录")
     try require(defaults.string(forKey: "home.quickNote") == home.quickNote, "收起窗口没有保存便签")
     try require(MemoLibraryModel(fileURL: memoURL).selectedItem?.body == home.memoLibrary.selectedItem?.body, "收起窗口没有保存备忘录")
@@ -286,34 +677,44 @@ func runTests() async throws {
     home.closeMemoLibrary()
 
     controller.showExpanded(destination: .prompts)
-    appModel.promptEditorOpen = true
-    appModel.promptDraftTitle = "未保存的标题"
-    appModel.promptDraftBody = "未保存的提示词正文"
+    appModel.prompts.promptEditorOpen = true
+    appModel.prompts.promptDraftTitle = "未保存的标题"
+    appModel.prompts.promptDraftBody = "未保存的提示词正文"
     controller.handleOutsideClick()
     finishWindowAnimation(controller.panel)
     try require(!controller.panel.isVisible, "提示词编辑时点击软件外部没有收起窗口")
     controller.showExpanded(destination: .prompts)
-    try require(appModel.promptEditorOpen, "重新打开后提示词编辑界面未保留")
-    try require(appModel.promptDraftTitle == "未保存的标题" && appModel.promptDraftBody == "未保存的提示词正文", "外部点击收起丢失未保存的提示词")
-    appModel.promptEditorOpen = false
+    try require(appModel.prompts.promptEditorOpen, "重新打开后提示词编辑界面未保留")
+    try require(appModel.prompts.promptDraftTitle == "未保存的标题" && appModel.prompts.promptDraftBody == "未保存的提示词正文", "外部点击收起丢失未保存的提示词")
+    appModel.prompts.promptEditorOpen = false
 
-    let restored = PreferencesStore(defaults: UserDefaults(suiteName: suite)!)
-    try require(restored.workspaceSize == resized, "重新读取偏好设置丢失尺寸")
-    let reopened = PanelController(model: AppModel(preferences: restored), preferences: restored)
-    defer { reopened.panel.orderOut(nil) }
-    reopened.showExpanded()
-    try require(reopened.panel.frame.size == resized, "新建窗口未恢复保存的尺寸")
-    try requireCentered(reopened.panel, "新窗口恢复后")
+    do {
+        let restored = PreferencesStore(defaults: UserDefaults(suiteName: suite)!)
+        try require(restored.workspaceSize == resized, "重新读取偏好设置丢失尺寸")
+        let reopenedHome = HomeDashboardModel(
+            defaults: restored.defaults,
+            memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("Memos/reopened.json")),
+            recordingsDirectory: recordings
+        )
+        let reopened = PanelController(model: AppModel(preferences: restored), preferences: restored, homeModel: reopenedHome)
+        defer {
+            reopened.hide()
+            reopened.panel.orderOut(nil)
+        }
+        reopened.showExpanded()
+        try require(reopened.panel.frame.size == resized, "新建窗口未恢复保存的尺寸")
+        try requireCentered(reopened.panel, "新窗口恢复后")
 
-    let oversized = NSSize(width: 8_000, height: 8_000)
-    restored.workspaceSize = oversized
-    reopened.hide()
-    reopened.showExpanded()
-    try require(reopened.panel.frame.width < oversized.width, "窗口没有适配屏幕宽度")
-    try require(reopened.panel.frame.height < oversized.height, "窗口没有适配屏幕高度")
-    try requireCentered(reopened.panel, "适配屏幕后")
-    try require(restored.workspaceSize == oversized, "适配屏幕覆盖了用户保存的尺寸")
-    try require(PreferencesStore(defaults: defaults).workspaceSize == oversized, "适配屏幕污染了持久化尺寸")
+        let oversized = NSSize(width: 8_000, height: 8_000)
+        restored.workspaceSize = oversized
+        reopened.hide()
+        reopened.showExpanded()
+        try require(reopened.panel.frame.width < oversized.width, "窗口没有适配屏幕宽度")
+        try require(reopened.panel.frame.height < oversized.height, "窗口没有适配屏幕高度")
+        try requireCentered(reopened.panel, "适配屏幕后")
+        try require(restored.workspaceSize == oversized, "适配屏幕覆盖了用户保存的尺寸")
+        try require(PreferencesStore(defaults: defaults).workspaceSize == oversized, "适配屏幕污染了持久化尺寸")
+    }
 
     home.quickNote += "\n退出前追加"
     home.memoLibrary.selectedID = memoID
@@ -404,7 +805,73 @@ func runTests() async throws {
     try require(MemoLibraryModel(fileURL: memoURL).selectedItem?.body == expectedMemo, "关闭未保存备忘录连续输入的完整文本")
 
     try await testTopNotch(controller: controller, model: appModel, defaults: defaults, directory: directory)
-    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放")
+    let hideDeadline = Date().addingTimeInterval(1)
+    while controller.hasEventMonitors && Date() < hideDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try require(!controller.hasEventMonitors, "完成刘海交互并收起后仍保留主面板监听")
+    try require(!controller.shellModel.isTerminalSessionLoaded && !home.isRecordingTranscriptionLoaded,
+                "打开首页、设置、提示词或进行刘海交互后，提前初始化了终端或录音转写")
+    controller.showExpanded(destination: .home)
+    home.restore(.recentApplications)
+    try await Task.sleep(nanoseconds: 150_000_000)
+    try require(controller.applicationsModel.isLoading || !controller.applicationsModel.applications.isEmpty,
+                "在可见首页恢复最近使用组件后未按需加载应用")
+    try require(!home.isRecordingTranscriptionLoaded && !controller.shellModel.isTerminalSessionLoaded,
+                "首页渲染提前创建了录音转写或终端会话")
+    try require(controller.panel.contentView.flatMap(findTerminalWebView(in:)) == nil, "未访问终端时挂载了 WKWebView")
+
+    home.openRecordingWorkspace(selecting: latestRecording)
+    guard let transcription = home.recordingTranscription else { throw PanelTestError.failed("打开录音工作台未创建转写管理器") }
+    try require(home.recordingWorkspaceOpen && transcription.selectedRecordingURL == latestRecording,
+                "首次打开录音工作台没有保留所选录音")
+    try require(transcription.canDeleteRecording?(latestRecording) == true, "懒加载未绑定录音删除检查")
+    let recordingDeadline = Date().addingTimeInterval(3)
+    while transcription.recordings.isEmpty && Date() < recordingDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    guard let recordedURL = transcription.recordings.first?.url else {
+        throw PanelTestError.failed("首次打开录音工作台未读取临时录音")
+    }
+    try transcription.deleteRecording(recordedURL)
+    try require(home.audioRecorder.latestRecordingURL == nil, "懒加载未将删除结果同步给首页录音组件")
+    home.closeRecordingWorkspace()
+    controller.hide()
+    finishWindowAnimation(controller.panel)
+
+    defaults.set(ToolDestination.terminal.rawValue, forKey: "island.lastDestination")
+    let restoredHome = HomeDashboardModel(defaults: defaults, memoLibrary: home.memoLibrary, recordingsDirectory: recordings)
+    let restoredAppModel = AppModel(preferences: preferences)
+    let restoredController = PanelController(model: restoredAppModel, preferences: preferences, homeModel: restoredHome)
+    defer { restoredController.panel.orderOut(nil) }
+    restoredController.panel.contentView?.layoutSubtreeIfNeeded()
+    try require(restoredController.shellModel.destination == .terminal && !restoredController.shellModel.isTerminalSessionLoaded,
+                "恢复终端页偏好时提前实例化了终端会话")
+    restoredController.showExpanded(openSettings: true)
+    try await Task.sleep(nanoseconds: 150_000_000)
+    try require(!restoredController.shellModel.isTerminalSessionLoaded, "仅打开设置时提前实例化了恢复的终端页")
+    restoredAppModel.settingsOpen = false
+    try await Task.sleep(nanoseconds: 150_000_000)
+    let terminalSession = restoredController.shellModel.terminalSession
+    let terminalView = restoredController.panel.contentView.flatMap(findTerminalWebView(in:))
+    try require(terminalSession != nil && terminalView != nil, "首次显示终端页未挂载终端会话和 WKWebView")
+    try require(!restoredController.applicationsModel.isLoading && restoredController.applicationsModel.applications.isEmpty,
+                "从终端页恢复时提前扫描了应用目录")
+    restoredController.showExpanded(destination: .applications)
+    try require(restoredController.applicationsModel.isLoading || !restoredController.applicationsModel.applications.isEmpty,
+                "进入应用页后未按需加载应用")
+    restoredController.showExpanded(destination: .terminal)
+    try require(restoredController.shellModel.terminalSession === terminalSession, "切出再进入终端页丢失了同一个会话")
+    try require(restoredController.panel.contentView.flatMap(findTerminalWebView(in:)) === terminalView,
+                "切出再进入终端页未复用 WKWebView")
+    restoredController.hide()
+    finishWindowAnimation(restoredController.panel)
+
+    try await testClipboardIncrementalUpdates(preferences: preferences, directory: directory)
+    try await testLibraryShortcuts(directory: directory)
+    try await testModulePreferences(directory: directory)
+    try require(UserDefaults.standard.string(forKey: "island.lastDestination") == standardDestinationBefore, "面板自检污染了用户默认偏好 island.lastDestination")
+    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放；主窗与小兜双主题及跟随系统；按需加载、监听生命周期、剪贴板增量一致性、资料库快捷键与保存转页；模块开关、导航回落、资源释放与首页布局保留")
 }
 
 try await runTests()

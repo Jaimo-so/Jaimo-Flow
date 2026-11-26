@@ -29,6 +29,10 @@ public enum ClipStoreError: LocalizedError {
 
 public final class SQLiteClipStore {
     public static let defaultHistoryLimit = 150
+    private static let clipColumns = """
+    id, kind, category, isFavorite, sourceAppName, sourceBundleID,
+    copiedAt, title, fullText, imagePath, imageAlt, meta, contentHash
+    """
 
     private let databaseURL: URL
     private let imagesURL: URL
@@ -92,8 +96,7 @@ public final class SQLiteClipStore {
 
     public func loadAll() throws -> [ClipItem] {
         let sql = """
-        SELECT id, kind, category, isFavorite, sourceAppName, sourceBundleID,
-               copiedAt, title, fullText, imagePath, imageAlt, meta, contentHash
+        SELECT \(Self.clipColumns)
         FROM clips
         ORDER BY copiedAt DESC, id DESC;
         """
@@ -110,8 +113,11 @@ public final class SQLiteClipStore {
     public func latestContentHash() throws -> String? {
         let statement = try prepare("SELECT contentHash FROM clips ORDER BY copiedAt DESC, id DESC LIMIT 1;")
         defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-        return string(statement, column: 0)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return string(statement, column: 0)
+        case SQLITE_DONE: return nil
+        default: throw ClipStoreError.execute(databaseMessage)
+        }
     }
 
     @discardableResult
@@ -119,64 +125,33 @@ public final class SQLiteClipStore {
         _ captured: CapturedClip,
         limit: Int = SQLiteClipStore.defaultHistoryLimit
     ) throws -> ClipItem? {
-        if try latestContentHash() == captured.contentHash {
-            return nil
-        }
+        try insertWithHistoryChanges(captured, limit: limit)?.item
+    }
 
+    public func insertWithHistoryChanges(
+        _ captured: CapturedClip,
+        limit: Int = SQLiteClipStore.defaultHistoryLimit
+    ) throws -> (item: ClipItem, evictedIDs: Set<Int64>)? {
         var storedImageURL: URL?
-        if let data = captured.imageData {
-            let ext = sanitizedExtension(captured.imageFileExtension ?? "png")
-            let fileURL = imagesURL.appendingPathComponent("\(UUID().uuidString).\(ext)")
-            try data.write(to: fileURL, options: [.atomic])
-            storedImageURL = fileURL
-        }
-
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
-            let sql = """
-            INSERT INTO clips (
-                kind, category, isFavorite, sourceAppName, sourceBundleID, copiedAt,
-                title, fullText, imagePath, imageAlt, meta, contentHash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """
-            let statement = try prepare(sql)
-            defer { sqlite3_finalize(statement) }
-
-            let metaData = try encoder.encode(captured.meta)
-            let metaJSON = String(decoding: metaData, as: UTF8.self)
-            try bind(captured.kind.rawValue, to: statement, at: 1)
-            try bind(captured.category.rawValue, to: statement, at: 2)
-            sqlite3_bind_int(statement, 3, 0)
-            try bind(captured.sourceAppName, to: statement, at: 4)
-            try bind(captured.sourceBundleID, to: statement, at: 5)
-            sqlite3_bind_double(statement, 6, captured.copiedAt.timeIntervalSince1970)
-            try bind(captured.title, to: statement, at: 7)
-            try bindOptional(captured.fullText, to: statement, at: 8)
-            try bindOptional(storedImageURL?.lastPathComponent, to: statement, at: 9)
-            try bindOptional(captured.imageAlt, to: statement, at: 10)
-            try bind(metaJSON, to: statement, at: 11)
-            try bind(captured.contentHash, to: statement, at: 12)
-
-            guard sqlite3_step(statement) == SQLITE_DONE else {
-                throw ClipStoreError.execute(databaseMessage)
+            if try latestContentHash() == captured.contentHash {
+                try execute("COMMIT;")
+                return nil
             }
-
-            let item = ClipItem(
-                id: sqlite3_last_insert_rowid(database),
-                kind: captured.kind,
-                category: captured.category,
-                sourceAppName: captured.sourceAppName,
-                sourceBundleID: captured.sourceBundleID,
-                copiedAt: captured.copiedAt,
-                title: captured.title,
-                fullText: captured.fullText,
-                imagePath: storedImageURL,
-                imageAlt: captured.imageAlt,
-                meta: captured.meta,
-                contentHash: captured.contentHash
-            )
-            try enforceHistoryLimit(limit)
-            return item
+            if let data = captured.imageData {
+                let ext = sanitizedExtension(captured.imageFileExtension ?? "png")
+                let fileURL = imagesURL.appendingPathComponent("\(UUID().uuidString).\(ext)")
+                try data.write(to: fileURL, options: [.atomic])
+                storedImageURL = fileURL
+            }
+            let item = try insertRow(captured, imageURL: storedImageURL)
+            let victims = try removeOverflowHistory(limit)
+            try execute("COMMIT;")
+            removeImages(victims.compactMap(\.imageURL))
+            return (item, Set(victims.map(\.id)))
         } catch {
+            try? execute("ROLLBACK;")
             if let storedImageURL {
                 try? FileManager.default.removeItem(at: storedImageURL)
             }
@@ -184,13 +159,51 @@ public final class SQLiteClipStore {
         }
     }
 
-    public func setFavorite(id: Int64, isFavorite: Bool) throws {
-        let statement = try prepare("UPDATE clips SET isFavorite = ? WHERE id = ?;")
+    private func insertRow(_ captured: CapturedClip, imageURL: URL?) throws -> ClipItem {
+        let statement = try prepare("""
+        INSERT INTO clips (
+            kind, category, isFavorite, sourceAppName, sourceBundleID, copiedAt,
+            title, fullText, imagePath, imageAlt, meta, contentHash
+        ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING \(Self.clipColumns);
+        """)
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int(statement, 1, isFavorite ? 1 : 0)
-        sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw ClipStoreError.execute(databaseMessage)
+
+        let metaJSON = String(decoding: try encoder.encode(captured.meta), as: UTF8.self)
+        try bind(captured.kind.rawValue, to: statement, at: 1)
+        try bind(captured.category.rawValue, to: statement, at: 2)
+        try bind(captured.sourceAppName, to: statement, at: 3)
+        try bind(captured.sourceBundleID, to: statement, at: 4)
+        sqlite3_bind_double(statement, 5, captured.copiedAt.timeIntervalSince1970)
+        try bind(captured.title, to: statement, at: 6)
+        try bindOptional(captured.fullText, to: statement, at: 7)
+        try bindOptional(imageURL?.lastPathComponent, to: statement, at: 8)
+        try bindOptional(captured.imageAlt, to: statement, at: 9)
+        try bind(metaJSON, to: statement, at: 10)
+        try bind(captured.contentHash, to: statement, at: 11)
+
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw ClipStoreError.execute(databaseMessage) }
+        let item = try decodeItem(statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw ClipStoreError.execute(databaseMessage) }
+        return item
+    }
+
+    public func setFavorite(id: Int64, isFavorite: Bool, limit: Int = SQLiteClipStore.defaultHistoryLimit) throws {
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let statement = try prepare("UPDATE clips SET isFavorite = ? WHERE id = ?;")
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int(statement, 1, isFavorite ? 1 : 0)
+            sqlite3_bind_int64(statement, 2, id)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw ClipStoreError.execute(databaseMessage)
+            }
+            let victims = isFavorite ? [] : try removeOverflowHistory(limit)
+            try execute("COMMIT;")
+            removeImages(victims.compactMap(\.imageURL))
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
         }
     }
 
@@ -421,33 +434,53 @@ public final class SQLiteClipStore {
     public func enforceHistoryLimit(
         _ limit: Int = SQLiteClipStore.defaultHistoryLimit
     ) throws {
-        let overflow = max(0, try itemCount() - max(1, limit))
-        guard overflow > 0 else { return }
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let victims = try removeOverflowHistory(limit)
+            try execute("COMMIT;")
+            removeImages(victims.compactMap(\.imageURL))
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
 
+    private func removeOverflowHistory(_ limit: Int) throws -> [(id: Int64, imageURL: URL?)] {
         let statement = try prepare("""
         SELECT id, imagePath FROM clips
         WHERE isFavorite = 0
-        ORDER BY copiedAt ASC, id ASC
-        LIMIT ?;
+        ORDER BY copiedAt DESC, id DESC
+        LIMIT -1 OFFSET ?;
         """)
-        sqlite3_bind_int(statement, 1, Int32(overflow))
-        var victims: [(Int64, URL?)] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let id = sqlite3_column_int64(statement, 0)
-            let filename = optionalString(statement, column: 1)
-            victims.append((id, filename.map { imagesURL.appendingPathComponent($0) }))
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(max(1, limit)))
+        var victims: [(id: Int64, imageURL: URL?)] = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            victims.append((
+                sqlite3_column_int64(statement, 0),
+                optionalString(statement, column: 1).map { imagesURL.appendingPathComponent($0) }
+            ))
+            result = sqlite3_step(statement)
         }
-        sqlite3_finalize(statement)
+        guard result == SQLITE_DONE else { throw ClipStoreError.execute(databaseMessage) }
+        guard !victims.isEmpty else { return [] }
 
-        for (id, path) in victims {
-            let delete = try prepare("DELETE FROM clips WHERE id = ?;")
+        let delete = try prepare("DELETE FROM clips WHERE id = ?;")
+        defer { sqlite3_finalize(delete) }
+        for (id, _) in victims {
             sqlite3_bind_int64(delete, 1, id)
-            let result = sqlite3_step(delete)
-            sqlite3_finalize(delete)
-            guard result == SQLITE_DONE else {
+            guard sqlite3_step(delete) == SQLITE_DONE else {
                 throw ClipStoreError.execute(databaseMessage)
             }
-            if let path { try? FileManager.default.removeItem(at: path) }
+            sqlite3_reset(delete)
+        }
+        return victims
+    }
+
+    private func removeImages(_ paths: [URL]) {
+        for path in paths {
+            try? FileManager.default.removeItem(at: path)
         }
     }
 

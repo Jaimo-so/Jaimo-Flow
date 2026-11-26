@@ -1,9 +1,22 @@
-<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="xterm.css"><style>
-html,body,#terminal{width:100%;height:100%;margin:0;overflow:hidden;background:#191c20} #terminal{box-sizing:border-box;padding:14px 16px}.xterm{height:100%}
+<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><link rel="stylesheet" href="xterm.css"><style>
+:root{--terminal-bg:#f4f7fc;--terminal-fg:#202a3a;--terminal-cursor:#007aff}
+@media (prefers-color-scheme:dark){:root{--terminal-bg:#1a1c24;--terminal-fg:#f0f1f5;--terminal-cursor:#0a84ff}}
+html,body,#terminal{width:100%;height:100%;margin:0;overflow:hidden;background:var(--terminal-bg)} #terminal{box-sizing:border-box;padding:14px 16px}.xterm{height:100%}
 .xterm .xterm-viewport::-webkit-scrollbar{display:none}
 </style></head><body><div id="terminal"></div><script src="xterm.js"></script><script>
 const xterm = window.JaimoXterm;
-const terminal = new xterm.Terminal({cursorBlink:true, fontFamily:'Menlo, monospace', fontSize:13, scrollback:10000, theme:{background:'#191c20',foreground:'#e7e8e8',cursor:'#80d6c7'}});
+function terminalTheme() {
+    const colors = getComputedStyle(document.documentElement);
+    return {
+        background: colors.getPropertyValue('--terminal-bg').trim(),
+        foreground: colors.getPropertyValue('--terminal-fg').trim(),
+        cursor: colors.getPropertyValue('--terminal-cursor').trim()
+    };
+}
+const terminal = new xterm.Terminal({cursorBlink:true, fontFamily:'Menlo, monospace', fontSize:13, scrollback:10000, minimumContrastRatio:4.5, theme:terminalTheme()});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    terminal.options.theme = terminalTheme();
+});
 const fit = new xterm.FitAddon(); terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit();
 const send = (type, value) => window.webkit.messageHandlers.terminal.postMessage({type,value});
 terminal.onData(data => send('input',data));

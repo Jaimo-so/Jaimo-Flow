@@ -101,13 +101,19 @@ do {
         guard let first = try store.insert(makeClip("first", date: Date(timeIntervalSince1970: 1))) else {
             throw SelfTestError.failed("无法插入首条记录")
         }
-        _ = try store.insert(makeClip("second", date: Date(timeIntervalSince1970: 2)))
+        let second = try store.insert(makeClip("second", date: Date(timeIntervalSince1970: 2)))!
         try store.setFavorite(id: first.id, isFavorite: true)
         _ = try store.insert(makeClip("third", date: Date(timeIntervalSince1970: 3)), limit: 2)
+        try require(store.itemCount() == 3, "收藏项不应占用非收藏历史额度")
+        let change = try store.insertWithHistoryChanges(makeClip("fourth", date: Date(timeIntervalSince1970: 3)), limit: 2)
 
         let items = try store.loadAll()
-        try require(Set(items.map(\.title)) == Set(["first", "third"]), "数量上限没有淘汰最旧非收藏项")
+        try require(change?.evictedIDs == [second.id], "增量结果没有返回实际淘汰的 ID")
+        try require(items.map(\.title) == ["fourth", "third", "first"], "数量上限、时间相同记录的顺序或收藏项不正确")
         try require(items.first(where: { $0.id == first.id })?.isFavorite == true, "收藏项没有保留")
+        try require(change?.item == items.first, "增量写入返回的记录与 SQLite 查询不一致")
+        try store.setFavorite(id: first.id, isFavorite: false, limit: 2)
+        try require(store.loadAll().map(\.title) == ["fourth", "third"], "取消收藏超出额度后没有淘汰最旧非收藏项")
     }
 
     try require(SQLiteClipStore.defaultHistoryLimit == 150, "默认历史上限必须为 150 条")

@@ -21,21 +21,20 @@ public final class DailyReviewStore {
     }
 
     public private(set) var entries: [DailyReviewEntry]
-    public let fileURL: URL
+    public var fileURL: URL { jsonStore.fileURL }
+    private let jsonStore: JSONFileStore<[DailyReviewEntry]>
 
     public init(fileURL: URL? = nil) throws {
-        self.fileURL = fileURL ?? FileManager.default.urls(
+        let url = fileURL ?? FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
             .appendingPathComponent("ClipFlow", isDirectory: true)
             .appendingPathComponent("DailyReviews", isDirectory: true)
             .appendingPathComponent("reviews.json")
-        if FileManager.default.fileExists(atPath: self.fileURL.path) {
-            entries = try JSONDecoder().decode([DailyReviewEntry].self, from: Data(contentsOf: self.fileURL))
-        } else {
-            entries = []
-        }
+        let jsonStore = JSONFileStore<[DailyReviewEntry]>(fileURL: url)
+        self.jsonStore = jsonStore
+        entries = jsonStore.exists ? try jsonStore.load() : []
     }
 
     public func entry(for dateKey: String) -> DailyReviewEntry? {
@@ -51,14 +50,7 @@ public final class DailyReviewStore {
         var next = entries.filter { $0.dateKey != dateKey }
         next.append(entry)
         next.sort { $0.dateKey > $1.dateKey }
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(next).write(to: fileURL, options: .atomic)
+        try jsonStore.save(next)
         entries = next
         return entry
     }
