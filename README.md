@@ -27,7 +27,11 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 
 所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
 
-> 当前版本：`0.11.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+> 当前版本：`0.12.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+
+## 0.12.0 版本更新
+
+新增「偏好设置 → 模块」，可独立开关内置终端、录音与转写和镜子。关闭模块会释放对应资源，重新开启后恢复录音与镜子组件原有的显示或隐藏状态。终端、录音转写和应用目录按需加载，剪切板历史改为事务内写入与淘汰、列表增量更新。提示词页用于可复用的变量模板，Vibehub 用于保留编程话术与术语知识。完整变更与安装说明见 [0.12.0 发布说明](docs/releases/v0.12.0.md)。
 
 ## 0.11.0 版本更新
 
@@ -83,7 +87,7 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-Flow-0.11.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
@@ -277,7 +281,7 @@ API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完
 ./Scripts/package-dmg.sh
 ```
 
-安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.11.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
+安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
 
 如果更换了 `Resources/AppLogo.png`，重新生成 macOS 图标：
 
