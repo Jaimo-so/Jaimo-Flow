@@ -7,7 +7,7 @@ public struct CredentialEntry: Identifiable, Equatable {
     public let title: String
 }
 
-public struct CredentialStore {
+public struct CredentialStore: Sendable {
     private let service: String
 
     public init(service: String = "com.clipflow.mac.credentials") {

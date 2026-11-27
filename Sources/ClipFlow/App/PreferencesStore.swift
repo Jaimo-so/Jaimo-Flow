@@ -24,6 +24,18 @@ enum FlowAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+enum NavigationDisplayStyle: String, CaseIterable, Identifiable {
+    case iconAndTitle
+    case iconOnly
+
+    var id: String { rawValue }
+    var title: String { self == .iconOnly ? "仅图标" : "图标 + 名称" }
+
+    func showsLabels(width: CGFloat, destinationCount: Int) -> Bool {
+        self == .iconAndTitle && width >= (destinationCount > 6 ? 780 : 760)
+    }
+}
+
 struct ExcludedApp: Codable, Hashable, Identifiable {
     let name: String
     let bundleID: String
@@ -37,10 +49,12 @@ final class PreferencesStore: ObservableObject {
         static let excludedApps = "excludedApps"
         static let promptGroupOrder = "promptGroupOrder"
         static let workspaceSize = "island.workspaceSize"
+        static let navigationDisplayStyle = "navigation.displayStyle"
         static let appearance = "appearance"
         static let terminalEnabled = "module.terminalEnabled"
         static let recordingEnabled = "module.recordingEnabled"
         static let mirrorEnabled = "module.mirrorEnabled"
+        static let quotaEnabled = "module.quotaEnabled"
     }
 
     static let defaultExcludedApps = [
@@ -57,8 +71,9 @@ final class PreferencesStore: ObservableObject {
         didSet { defaults.set(appearance.rawValue, forKey: Key.appearance) }
     }
 
-    @Published var terminalEnabled: Bool {
-        didSet { defaults.set(terminalEnabled, forKey: Key.terminalEnabled) }
+    var terminalEnabled: Bool {
+        get { isDestinationEnabled(.terminal) }
+        set { setDestinationEnabled(newValue, for: .terminal) }
     }
 
     @Published var recordingEnabled: Bool {
@@ -67,6 +82,53 @@ final class PreferencesStore: ObservableObject {
 
     @Published var mirrorEnabled: Bool {
         didSet { defaults.set(mirrorEnabled, forKey: Key.mirrorEnabled) }
+    }
+
+    var quotaEnabled: Bool {
+        get { isDestinationEnabled(.quota) }
+        set { setDestinationEnabled(newValue, for: .quota) }
+    }
+
+    @Published var navigationDisplayStyle: NavigationDisplayStyle {
+        didSet { defaults.set(navigationDisplayStyle.rawValue, forKey: Key.navigationDisplayStyle) }
+    }
+
+    @Published private(set) var enabledDestinations: [ToolDestination]
+    var canDisableDestinationForSaving: ((ToolDestination) -> Bool)?
+
+    private static func destinationKey(_ destination: ToolDestination) -> String {
+        switch destination {
+        case .terminal: return Key.terminalEnabled
+        case .quota: return Key.quotaEnabled
+        default: return "navigation.\(destination.rawValue)Enabled"
+        }
+    }
+
+    func isDestinationEnabled(_ destination: ToolDestination) -> Bool {
+        enabledDestinations.contains(destination)
+    }
+
+    func canDisableDestination(_ destination: ToolDestination) -> Bool {
+        !isDestinationEnabled(destination) || enabledDestinations.count > 1
+    }
+
+    func setDestinationEnabled(_ enabled: Bool, for destination: ToolDestination) {
+        guard enabled != isDestinationEnabled(destination) else { return }
+        if !enabled {
+            guard canDisableDestination(destination), canDisableDestinationForSaving?(destination) != false else { return }
+        }
+        defaults.set(enabled, forKey: Self.destinationKey(destination))
+        enabledDestinations = ToolDestination.allCases.filter {
+            $0 == destination ? enabled : isDestinationEnabled($0)
+        }
+    }
+
+    func resetNavigationPreferences() {
+        navigationDisplayStyle = .iconAndTitle
+        for destination in ToolDestination.allCases {
+            defaults.set(true, forKey: Self.destinationKey(destination))
+        }
+        enabledDestinations = ToolDestination.allCases
     }
 
     @Published private(set) var excludedApps: [ExcludedApp] {
@@ -96,13 +158,21 @@ final class PreferencesStore: ObservableObject {
             Key.closeAfterCopy: true,
             Key.terminalEnabled: true,
             Key.recordingEnabled: true,
-            Key.mirrorEnabled: true
+            Key.mirrorEnabled: true,
+            Key.quotaEnabled: true
         ])
         closeAfterCopy = defaults.bool(forKey: Key.closeAfterCopy)
         appearance = FlowAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
-        terminalEnabled = defaults.bool(forKey: Key.terminalEnabled)
         recordingEnabled = defaults.bool(forKey: Key.recordingEnabled)
         mirrorEnabled = defaults.bool(forKey: Key.mirrorEnabled)
+        navigationDisplayStyle = NavigationDisplayStyle(
+            rawValue: defaults.string(forKey: Key.navigationDisplayStyle) ?? ""
+        ) ?? .iconAndTitle
+        let enabled = ToolDestination.allCases.filter {
+            defaults.object(forKey: Self.destinationKey($0)) as? Bool ?? true
+        }
+        enabledDestinations = enabled.isEmpty ? [.home] : enabled
+        if enabled.isEmpty { defaults.set(true, forKey: Self.destinationKey(.home)) }
         promptGroupOrder = defaults.stringArray(forKey: Key.promptGroupOrder) ?? []
         if let saved = defaults.dictionary(forKey: Key.workspaceSize),
            let width = saved["width"] as? Double,

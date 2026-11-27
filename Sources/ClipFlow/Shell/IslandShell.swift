@@ -9,8 +9,11 @@ enum ToolDestination: String, CaseIterable, Identifiable {
     case clipboard
     case vibehub
     case terminal
+    case quota
 
     var id: String { rawValue }
+
+    var shortcutHint: String { "⌘\(Self.allCases.firstIndex(of: self)! + 1)" }
 
     var title: String {
         switch self {
@@ -20,6 +23,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .clipboard: return "剪切板"
         case .vibehub: return "Vibehub"
         case .terminal: return "终端"
+        case .quota: return "额度"
         }
     }
 
@@ -31,6 +35,7 @@ enum ToolDestination: String, CaseIterable, Identifiable {
         case .clipboard: return "doc.on.clipboard"
         case .vibehub: return "text.bubble"
         case .terminal: return "terminal"
+        case .quota: return "gauge"
         }
     }
 }
@@ -43,8 +48,16 @@ final class IslandShellModel: ObservableObject {
 
     private static let destinationKey = "island.lastDestination"
     private let defaults: UserDefaults
-    @Published private var terminalEnabled: Bool
-    private var terminalPreferenceSubscription: AnyCancellable?
+    @Published private(set) var availableDestinations: [ToolDestination]
+    private var navigationPreferenceSubscription: AnyCancellable?
+    var onDestinationDisabled: ((ToolDestination) -> Void)?
+    var onQuotaExternalAuthCompleted: (() -> Void)?
+    private var quotaEditorSubscription: AnyCancellable?
+    private let quotaMonitorFactory: () -> QuotaMonitorModel
+    private var quotaRequestedAccountIDs: Set<String> = []
+    @Published private(set) var quotaMonitor: QuotaMonitorModel?
+    var isQuotaMonitorLoaded: Bool { quotaMonitor != nil }
+    var isQuotaModalOpen: Bool { destination == .quota && quotaMonitor?.editorOpen == true }
     @Published private(set) var terminalSession: TerminalSession?
     var isTerminalSessionLoaded: Bool { terminalSession != nil }
     var isTerminalChoosingFolder: Bool { terminalSession?.isChoosingFolder == true }
@@ -56,48 +69,74 @@ final class IslandShellModel: ObservableObject {
         return agent
     }()
 
-    init(preferences: PreferencesStore) {
+    init(preferences: PreferencesStore, quotaMonitorFactory: (() -> QuotaMonitorModel)? = nil) {
         defaults = preferences.defaults
-        terminalEnabled = preferences.terminalEnabled
-        let savedDestination = ToolDestination(rawValue: preferences.defaults.string(forKey: Self.destinationKey) ?? "") ?? .home
-        if savedDestination == .terminal, !preferences.terminalEnabled {
-            destination = .home
-            preferences.defaults.set(ToolDestination.home.rawValue, forKey: Self.destinationKey)
-        } else {
-            destination = savedDestination
+        let enabled = preferences.enabledDestinations
+        availableDestinations = enabled
+        self.quotaMonitorFactory = quotaMonitorFactory ?? { QuotaMonitorModel() }
+        let saved = preferences.defaults.string(forKey: Self.destinationKey)
+        destination = enabled.first { $0.rawValue == saved } ?? enabled[0]
+        if destination.rawValue != saved {
+            preferences.defaults.set(destination.rawValue, forKey: Self.destinationKey)
         }
-        terminalPreferenceSubscription = preferences.$terminalEnabled.dropFirst().removeDuplicates().sink { [weak self] enabled in
-            self?.setTerminalEnabled(enabled)
+        navigationPreferenceSubscription = preferences.$enabledDestinations.dropFirst().removeDuplicates().sink { [weak self] enabled in
+            self?.updateAvailableDestinations(enabled)
         }
-    }
-
-    var availableDestinations: [ToolDestination] {
-        ToolDestination.allCases.filter { $0 != .terminal || terminalEnabled }
     }
 
     func selectDestination(_ destination: ToolDestination) {
         guard self.destination != destination, availableDestinations.contains(destination) else { return }
+        if self.destination == .quota { quotaMonitor?.cancelEditor() }
         self.destination = destination
     }
 
-    private func setTerminalEnabled(_ enabled: Bool) {
-        guard terminalEnabled != enabled else { return }
+    private func updateAvailableDestinations(_ enabled: [ToolDestination]) {
+        let previous = availableDestinations
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            terminalEnabled = enabled
-            if !enabled {
-                if destination == .terminal { selectDestination(.home) }
+            availableDestinations = enabled
+            if !enabled.contains(destination), let fallback = enabled.first {
+                if let onDestinationDisabled {
+                    onDestinationDisabled(fallback)
+                } else {
+                    selectDestination(fallback)
+                }
+            }
+            if previous.contains(.terminal), !enabled.contains(.terminal) {
                 terminalSession?.shutdown()
                 terminalSession = nil
+            }
+            if previous.contains(.quota), !enabled.contains(.quota) {
+                if let quotaMonitor { quotaRequestedAccountIDs = quotaMonitor.requestedAccountIDs }
+                quotaEditorSubscription = nil
+                quotaMonitor?.shutdown()
+                quotaMonitor = nil
             }
         }
     }
 
     func activateTerminalIfSelected() {
-        guard terminalEnabled, destination == .terminal, terminalSession == nil else { return }
+        guard availableDestinations.contains(.terminal), destination == .terminal, terminalSession == nil else { return }
         terminalSession = TerminalSession()
     }
+
+    func activateQuotaIfSelected() {
+        guard availableDestinations.contains(.quota), destination == .quota else { return }
+        if let quotaMonitor {
+            quotaMonitor.refreshStaleAccounts()
+            return
+        }
+        let monitor = quotaMonitorFactory()
+        monitor.onExternalAuthCompleted = { [weak self] in self?.onQuotaExternalAuthCompleted?() }
+        quotaEditorSubscription = monitor.$editorOpen.dropFirst().removeDuplicates().sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        quotaMonitor = monitor
+        monitor.refreshStaleAccounts(previouslyRequestedAccountIDs: quotaRequestedAccountIDs)
+    }
+
+
 }
 
 struct AppearanceRootView: View {
@@ -112,13 +151,14 @@ struct AppearanceRootView: View {
 }
 
 struct IslandRootView: View {
+    @ObservedObject var preferences: PreferencesStore
     @ObservedObject var model: AppModel
     @ObservedObject var shell: IslandShellModel
     @ObservedObject var homeModel: HomeDashboardModel
     @ObservedObject var applicationsModel: ApplicationsModel
     let onSelectDestination: (ToolDestination) -> Void
     let onSavePrompt: () -> Void
-    let onSettingsClosed: () -> Void
+    let onSettingsVisibilityChanged: () -> Void
     let onRecentApplicationsAppear: () -> Void
     let onClose: () -> Void
     let onQuit: () -> Void
@@ -154,7 +194,7 @@ struct IslandRootView: View {
         }
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.settingsOpen)
         .animation(reduceMotion ? FlowMotion.reduced : FlowMotion.content, value: model.toastMessage)
-        .onChange(of: model.settingsOpen) { if !$0 { onSettingsClosed() } }
+        .onChange(of: model.settingsOpen) { _ in onSettingsVisibilityChanged() }
     }
 
     private func expandedContent(_ theme: ClipFlowTheme) -> some View {
@@ -195,12 +235,16 @@ struct IslandRootView: View {
             || homeModel.memoLibraryOpen
             || homeModel.dailyReviewHistoryOpen
             || homeModel.recordingWorkspaceOpen
+            || shell.isQuotaModalOpen
             || (shell.destination == .vibehub && shell.vibeHubAgent.panel != .closed)
     }
 
     private func topBar(_ theme: ClipFlowTheme) -> some View {
         GeometryReader { proxy in
-            let showLabels = proxy.size.width >= 760
+            let hasSevenDestinations = shell.availableDestinations.count > 6
+            let showLabels = preferences.navigationDisplayStyle.showsLabels(
+                width: proxy.size.width, destinationCount: shell.availableDestinations.count
+            )
             let showBrandName = proxy.size.width >= 800
             ZStack {
                 HStack {
@@ -238,7 +282,7 @@ struct IslandRootView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(selected ? theme.foreground : theme.foregroundSecondary)
                             .fixedSize()
-                            .padding(.horizontal, showLabels ? 12 : 9)
+                            .padding(.horizontal, showLabels ? (hasSevenDestinations ? 10 : 12) : 9)
                             .frame(minWidth: showLabels ? 58 : 34, minHeight: 32)
                             .background {
                                 if selected {
@@ -251,7 +295,7 @@ struct IslandRootView: View {
                         }
                         .buttonStyle(IslandNavigationButtonStyle())
                         .accessibilityLabel(destination.title)
-                        .help(destination.title)
+                        .help("\(destination.title)（\(destination.shortcutHint)）")
                         .accessibilityAddTraits(selected ? [.isSelected] : [])
                     }
                 }
@@ -307,7 +351,8 @@ struct IslandRootView: View {
                 audioRecorderModel: homeModel.audioRecorder,
                 cameraModel: homeModel.camera,
                 memoModel: homeModel.memoLibrary,
-                onOpenApplications: { onSelectDestination(.applications) },
+                onOpenApplications: shell.availableDestinations.contains(.applications)
+                    ? { onSelectDestination(.applications) } : nil,
                 onRecentApplicationsAppear: onRecentApplicationsAppear
             )
         case .applications:
@@ -326,6 +371,8 @@ struct IslandRootView: View {
             VibeHubLibraryView(library: shell.vibeHubLibrary, appModel: model, agent: shell.vibeHubAgent)
         case .terminal:
             EmptyView()
+        case .quota:
+            if let monitor = shell.quotaMonitor { QuotaView(model: monitor) }
         }
     }
 }

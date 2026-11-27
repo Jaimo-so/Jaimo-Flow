@@ -139,15 +139,16 @@ struct SettingsView: View {
                             }
                         }
 
-                        settingsGroup(title: "模块", theme: theme) {
-                            moduleToggle("内置终端", isOn: $preferences.terminalEnabled, theme: theme)
-                            rowDivider(theme)
+                        navigationSettings(theme)
+
+                        settingsGroup(title: "首页模块", theme: theme) {
                             moduleToggle("录音与转写", isOn: $preferences.recordingEnabled, theme: theme)
                             rowDivider(theme)
                             moduleToggle("镜子", isOn: $preferences.mirrorEnabled, theme: theme)
-                            Text("关闭模块会释放正在使用的资源，已保存的本地数据会保留。")
-                                .font(.system(size: 11.5)).foregroundStyle(theme.muted)
-                                .fixedSize(horizontal: false, vertical: true)
+                            settingsNote("关闭模块会释放正在使用的资源，已保存的本地数据会保留。", theme: theme)
+                            if !preferences.isDestinationEnabled(.home) {
+                                settingsNote("首页已隐藏，重新开启首页后会恢复显示已启用的组件。", theme: theme)
+                            }
                         }
 
                         if preferences.mirrorEnabled, let homeModel {
@@ -396,17 +397,137 @@ struct SettingsView: View {
         return "此操作不可撤销，历史收藏也会一并删除，但提示词库会保留。点击后需再次确认。"
     }
 
+    private func navigationSettings(_ theme: ClipFlowTheme) -> some View {
+        let count = preferences.enabledDestinations.count
+        let total = ToolDestination.allCases.count
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                settingsHeading("导航栏与页面", theme: theme)
+                Spacer()
+                settingsNote("已开启 \(count)/\(total)", theme: theme)
+                    .monospacedDigit()
+                if count != total || preferences.navigationDisplayStyle != .iconAndTitle {
+                    Button("恢复默认", action: preferences.resetNavigationPreferences)
+                        .buttonStyle(GlassButtonStyle(kind: .normal))
+                        .controlSize(.small)
+                        .accessibilityHint("开启全部页面并显示图标与名称")
+                }
+            }
+            .frame(minHeight: 26)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    navigationStyleDescription(theme)
+                    Spacer(minLength: 8)
+                    navigationStylePicker()
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    navigationStyleDescription(theme)
+                    navigationStylePicker()
+                }
+            }
+            .padding(.vertical, 8)
+            ForEach(ToolDestination.allCases) { destination in
+                rowDivider(theme)
+                navigationPageRow(destination, theme: theme)
+            }
+            settingsNote("关闭页面会隐藏入口并停用对应快捷键，本地数据会保留。关闭终端或额度会释放会话或停止查询。", theme: theme)
+                .padding(.top, 6)
+        }
+        .padding(12)
+        .flowInset(theme)
+    }
+
+    private func navigationStyleDescription(_ theme: ClipFlowTheme) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("导航显示方式").font(.system(size: 13)).foregroundStyle(theme.foreground)
+            settingsNote(
+                preferences.navigationDisplayStyle == .iconOnly
+                    ? "悬停查看名称与快捷键" : "窄窗口自动折叠名称",
+                theme: theme
+            )
+        }
+    }
+
+    private func navigationStylePicker() -> some View {
+        Picker("导航显示方式", selection: $preferences.navigationDisplayStyle) {
+            ForEach(NavigationDisplayStyle.allCases) { style in
+                Text(style.title).tag(style)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel("导航显示方式")
+    }
+
+    private func navigationPageRow(_ destination: ToolDestination, theme: ClipFlowTheme) -> some View {
+        let enabled = preferences.isDestinationEnabled(destination)
+        let locked = !preferences.canDisableDestination(destination)
+        return HStack(spacing: 8) {
+            Image(systemName: destination.symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(enabled ? theme.accent : theme.foregroundSecondary)
+                .frame(width: 26, height: 26)
+                .background(theme.weakHairline, in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(destination.title).font(.system(size: 13)).foregroundStyle(theme.foreground)
+                    KeyCap(text: destination.shortcutHint)
+                }
+                settingsNote(navigationPageDescription(destination), theme: theme)
+            }
+            Spacer(minLength: 0)
+            if locked { settingsNote("至少保留 1 项", theme: theme) }
+            Toggle(destination.title, isOn: Binding(
+                get: { preferences.isDestinationEnabled(destination) },
+                set: { preferences.setDestinationEnabled($0, for: destination) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .tint(theme.accent)
+            .disabled(locked)
+            .accessibilityHint(locked ? "至少保留 1 项" : "控制页面入口和 \(destination.shortcutHint) 快捷键")
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func navigationPageDescription(_ destination: ToolDestination) -> String {
+        switch destination {
+        case .home: return "便签、备忘录、录音、镜子等工作台组件"
+        case .applications: return "常用应用与本机应用启动台"
+        case .prompts: return "支持 {{变量}} 的通用模板库"
+        case .clipboard: return "剪切板历史与 API Key 分组"
+        case .vibehub: return "Vibe Coding 话术与术语知识库"
+        case .terminal: return "内置终端会话，关闭后自动释放"
+        case .quota: return "账号用量与余额，关闭后停止查询"
+        }
+    }
+
+    private func settingsNote(_ text: String, theme: ClipFlowTheme) -> some View {
+        Text(text)
+            .font(.system(size: 11.5))
+            .foregroundStyle(theme.foregroundSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func settingsHeading(_ title: String, theme: ClipFlowTheme) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(0.88)
+            .foregroundStyle(theme.foregroundSecondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+
     private func settingsGroup<Content: View>(
         title: String,
         theme: ClipFlowTheme,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .textCase(.uppercase)
-                .tracking(0.88)
-                .foregroundStyle(theme.foregroundSecondary)
+            settingsHeading(title, theme: theme)
                 .padding(.bottom, 8)
             content()
         }

@@ -32,6 +32,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private weak var hiddenModalWindow: NSWindow?
     private weak var hiddenSheet: NSWindow?
     private var isPresented = false
+    private var isQuotaPageVisible = false
     private var visibilityGeneration = 0
     private var isApplyingPresentationFrame = false
     var onVisibilityChanged: ((Bool) -> Void)?
@@ -40,10 +41,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private let minimumWorkspaceSize = NSSize(width: 520, height: 420)
 
-    init(model: AppModel, preferences: PreferencesStore, homeModel providedHomeModel: HomeDashboardModel? = nil) {
+    init(
+        model: AppModel,
+        preferences: PreferencesStore,
+        homeModel providedHomeModel: HomeDashboardModel? = nil,
+        quotaMonitorFactory: (() -> QuotaMonitorModel)? = nil
+    ) {
         self.model = model
         self.preferences = preferences
-        shellModel = IslandShellModel(preferences: preferences)
+        shellModel = IslandShellModel(preferences: preferences, quotaMonitorFactory: quotaMonitorFactory)
         if shellModel.destination == .prompts { lastLibraryDestination = .prompts }
         homeModel = providedHomeModel ?? HomeDashboardModel(defaults: preferences.defaults)
         applicationsModel = ApplicationsModel(defaults: preferences.defaults)
@@ -61,6 +67,20 @@ final class PanelController: NSObject, NSWindowDelegate {
             defer: false
         )
         super.init()
+
+        shellModel.onDestinationDisabled = { [weak self] in self?.selectDestination($0) }
+        preferences.canDisableDestinationForSaving = { [weak self] destination in
+            guard let self else { return true }
+            let saved: Bool
+            switch destination {
+            case .home: saved = self.homeModel.flushNotes()
+            case .vibehub where self.shellModel.destination == .vibehub:
+                saved = self.shellModel.vibeHubLibrary.flushPendingChanges()
+            default: return true
+            }
+            if !saved { self.model.showToast("保存失败，内容已保留，请重试关闭页面") }
+            return saved
+        }
 
         preferences.$recordingEnabled.removeDuplicates().sink { [weak homeModel] enabled in
             homeModel?.setRecordingEnabled(enabled)
@@ -85,13 +105,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.acceptsMouseMovedEvents = true
 
         let rootView = IslandRootView(
+            preferences: preferences,
             model: model,
             shell: shellModel,
             homeModel: homeModel,
             applicationsModel: applicationsModel,
             onSelectDestination: { [weak self] in self?.selectDestination($0) },
             onSavePrompt: { [weak self] in self?.savePromptDraft() },
-            onSettingsClosed: { [weak self] in self?.activateCurrentDestination() },
+            onSettingsVisibilityChanged: { [weak self] in self?.activateCurrentDestination() },
             onRecentApplicationsAppear: { [weak self] in self?.loadApplicationsForCurrentDestination() },
             onClose: { [weak self] in self?.hide() },
             onQuit: { NSApp.terminate(nil) }
@@ -108,6 +129,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.onRequestClose = { [weak self] in self?.hide() }
         // The floating panel would otherwise cover the Finder window we reveal.
         homeModel.audioRecorder.onWillRevealRecording = { [weak self] in self?.hide() }
+        shellModel.onQuotaExternalAuthCompleted = { [weak self] in
+            guard let self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            if !self.isPresented {
+                self.showExpanded(destination: .quota)
+            } else {
+                self.panel.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     deinit {
@@ -136,6 +166,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             homeModel.memoLibraryOpen = false
             homeModel.dailyReviewHistoryOpen = false
             homeModel.closeRecordingWorkspace()
+            shellModel.quotaMonitor?.cancelEditor()
         }
         if !resumeAfterPointerExit || openSettings {
             model.settingsOpen = openSettings
@@ -174,6 +205,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             return
         }
         isPresented = false
+        isQuotaPageVisible = false
         resumeAfterPointerExit = preserveDialogs
         pendingPointerExit?.cancel()
         pendingPointerExit = nil
@@ -185,6 +217,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             if !preserveDialogs { shellModel.vibeHubAgent.discardSession() }
         }
         if !preserveDialogs {
+            shellModel.quotaMonitor?.cancelEditor()
             model.credentials.cancelCredentialEditor()
             model.credentials.credentialDeleteConfirmationOpen = false
             homeModel.recordingTranscription?.playback.stop()
@@ -217,7 +250,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func hideAfterPointerExit() {
-        guard isPresented, !shellModel.isTerminalChoosingFolder,
+        guard isPresented, !isChoosingDirectory,
               !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else { return }
         guard homeModel.flushNotes() else {
             model.showToast("笔记保存失败，内容已保留，请重试关闭")
@@ -240,7 +273,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func handlePointerMovement() {
         guard isPresented else { return }
-        if shellModel.isTerminalChoosingFolder || pointerIsOverApplication() {
+        if isChoosingDirectory || pointerIsOverApplication() {
             pendingPointerExit?.cancel()
             pendingPointerExit = nil
             return
@@ -249,7 +282,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingPointerExit = nil
-            guard self.isPresented, !self.shellModel.isTerminalChoosingFolder,
+            guard self.isPresented, !self.isChoosingDirectory,
                   !self.pointerIsOverApplication(),
                   NSEvent.pressedMouseButtons == 0, !self.panel.inLiveResize else { return }
             self.hideAfterPointerExit()
@@ -267,6 +300,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         homeModel.audioRecorder.finishIfNeeded()
         releaseLocalDevices()
+        shellModel.quotaMonitor?.cancelAll()
         if shellModel.destination == .vibehub {
             shellModel.vibeHubLibrary.flush()
             shellModel.vibeHubAgent.discardSession()
@@ -406,7 +440,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                     lastLibraryDestination = destination
                     model.focusArea = .other
                     model.clipboard.normalizeHistorySelection()
-                case .home, .applications, .vibehub, .terminal: break
+                case .home, .applications, .vibehub, .terminal, .quota: break
                 }
             }
             activateCurrentDestination()
@@ -419,8 +453,15 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func activateCurrentDestination() {
-        guard isPresented, !model.settingsOpen else { return }
+        guard isPresented, !model.settingsOpen else {
+            isQuotaPageVisible = false
+            return
+        }
+        let quotaPageVisible = shellModel.destination == .quota
+        let shouldActivateQuota = quotaPageVisible && (!isQuotaPageVisible || !shellModel.isQuotaMonitorLoaded)
+        isQuotaPageVisible = quotaPageVisible
         shellModel.activateTerminalIfSelected()
+        if shouldActivateQuota { shellModel.activateQuotaIfSelected() }
         loadApplicationsForCurrentDestination()
     }
 
@@ -467,7 +508,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func handleOutsideClick() {
         guard isPresented, panel.isVisible, !hasBlockingModal,
-              !shellModel.isTerminalChoosingFolder else { return }
+              !isChoosingDirectory else { return }
         hide()
     }
 
@@ -478,12 +519,18 @@ final class PanelController: NSObject, NSWindowDelegate {
             || model.credentials.hasOpenDialog
             || homeModel.dailyReviewHistoryOpen
             || homeModel.recordingWorkspaceOpen
+            || shellModel.isQuotaModalOpen
             || (shellModel.destination == .vibehub && shellModel.vibeHubAgent.panel != .closed)
+    }
+
+    private var isChoosingDirectory: Bool {
+        shellModel.isTerminalChoosingFolder || shellModel.quotaMonitor?.isChoosingDirectory == true
     }
 
     private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String) -> Bool {
         guard isPresented else { return false }
         if ScreenshotShortcutRecorder.isRecording { return false }
+        if shellModel.quotaMonitor?.isChoosingDirectory == true { return false }
         let command = flags.contains(.command)
         let shift = flags.contains(.shift)
         let option = flags.contains(.option)
@@ -495,6 +542,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         if command && key == "q" {
             NSApp.terminate(nil)
             return true
+        }
+
+        if shellModel.isQuotaModalOpen {
+            if keyCode == UInt16(kVK_Escape) {
+                shellModel.quotaMonitor?.cancelEditor()
+                return true
+            }
+            return false
         }
 
         if shellModel.destination == .vibehub, shellModel.vibeHubAgent.panel != .closed {
@@ -614,6 +669,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Terminal programs need Escape and the remaining keys without panel shortcuts.
         if shellModel.destination == .terminal { return false }
 
+        if shellModel.destination == .quota, command, !shift, !option, key == "r" {
+            shellModel.quotaMonitor?.refreshAll()
+            return true
+        }
+
         if shellModel.destination == .home, option, homeModel.editingWidget != nil {
             if keyCode == UInt16(kVK_UpArrow) {
                 homeModel.moveSelectedWidget(by: -1)
@@ -639,7 +699,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                     panel?.firstResponder?.tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
                 }
                 return true
-            case .home, .terminal:
+            case .home, .terminal, .quota:
                 return false
             }
         }
@@ -660,6 +720,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 }
                 return true
             }
+            guard shellModel.availableDestinations.contains(.prompts) else { return false }
             showExpanded(destination: .prompts)
             model.prompts.beginCreatePrompt()
             return true
@@ -738,16 +799,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func destinationForShortcut(_ key: String) -> ToolDestination? {
-        switch key {
-        case "1": return .home
-        case "2": return .applications
-        case "3": return .prompts
-        case "4": return .clipboard
-        case "5": return .vibehub
-        case "6" where shellModel.availableDestinations.contains(.terminal): return .terminal
-        default: return nil
-        }
+    func destinationForShortcut(_ key: String) -> ToolDestination? {
+        shellModel.availableDestinations.first { $0.shortcutHint == "⌘\(key)" }
     }
 
     private func routeStandardTextCommand(_ key: String) -> Bool {

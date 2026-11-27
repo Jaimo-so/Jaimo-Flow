@@ -8,7 +8,7 @@ struct HomeDashboardView: View {
     let audioRecorderModel: AudioRecorderModel
     @ObservedObject var cameraModel: CameraCheckModel
     @ObservedObject var memoModel: MemoLibraryModel
-    let onOpenApplications: () -> Void
+    let onOpenApplications: (() -> Void)?
     let onRecentApplicationsAppear: () -> Void
 
     @State private var editingWidgets = false
@@ -23,14 +23,9 @@ struct HomeDashboardView: View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("\(greeting) · \(Date.now.formatted(.dateTime.month().day().weekday(.wide).locale(Locale(identifier: "zh_CN"))))")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.muted)
-                    Text("工作台")
-                        .font(.system(size: 23, weight: .semibold))
-                        .tracking(-0.5)
-                }
+                Text("工作台")
+                    .font(.system(size: 23, weight: .semibold))
+                    .tracking(-0.5)
                 Spacer()
                 Button {
                     let willEdit = !editingWidgets
@@ -54,7 +49,8 @@ struct HomeDashboardView: View {
                 .help("排序、调整大小与恢复已隐藏的组件")
             }
             .padding(.horizontal, 18)
-            .frame(height: 64)
+            .padding(.top, 2)
+            .padding(.bottom, 6)
 
             GeometryReader { proxy in
                 ScrollView(.vertical) {
@@ -214,14 +210,6 @@ struct HomeDashboardView: View {
                 dropTargetWidget = nil
             }
         }
-    }
-
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        if hour < 6 { return "夜深了" }
-        if hour < 12 { return "上午好" }
-        if hour < 18 { return "下午好" }
-        return "晚上好"
     }
 
     private func restoreBar(_ theme: ClipFlowTheme) -> some View {
@@ -432,9 +420,11 @@ struct HomeDashboardView: View {
                         Text("还没有启动记录")
                             .font(.system(size: 12.5))
                             .foregroundStyle(theme.foregroundSecondary)
-                        Button("打开应用程序", action: onOpenApplications)
-                            .buttonStyle(GlassButtonStyle(kind: .normal))
-                            .fixedSize()
+                        if let onOpenApplications {
+                            Button("打开应用程序", action: onOpenApplications)
+                                .buttonStyle(GlassButtonStyle(kind: .normal))
+                                .fixedSize()
+                        }
                     }
                     .frame(maxWidth: .infinity, minHeight: 90)
                 } else {

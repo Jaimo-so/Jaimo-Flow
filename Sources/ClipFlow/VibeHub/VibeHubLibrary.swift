@@ -179,14 +179,22 @@ final class VibeHubLibraryModel: ObservableObject {
     }
 
     func flush() {
+        _ = flushPendingChanges()
+    }
+
+    func flushPendingChanges() -> Bool {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        guard hasUnsavedChanges, !loadFailed else { return }
+        guard hasUnsavedChanges, !loadFailed else { return !hasUnsavedChanges }
         do {
             try jsonStore.save(items)
             hasUnsavedChanges = false
             saveStatus = .saved
-        } catch { saveStatus = .failed }
+            return true
+        } catch {
+            saveStatus = .failed
+            return false
+        }
     }
 
     private func matches(_ item: VibeHubItem, scope: Scope) -> Bool {

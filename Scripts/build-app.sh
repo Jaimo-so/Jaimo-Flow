@@ -29,6 +29,7 @@ cp "$UPDATER_BINARY" "$APP_DIR/Contents/Helpers/ClipFlowUpdater"
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 cp -R "$PROJECT_DIR/Resources/Terminal" "$APP_DIR/Contents/Resources/Terminal"
+cp -R "$PROJECT_DIR/Resources/Quota" "$APP_DIR/Contents/Resources/Quota"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     /usr/bin/codesign --force --sign - "$APP_DIR/Contents/Helpers/ClipFlowUpdater"

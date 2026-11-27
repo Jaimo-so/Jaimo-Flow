@@ -271,14 +271,9 @@ struct ApplicationsView: View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("应用程序")
-                        .font(.system(size: 23, weight: .semibold))
-                        .tracking(-0.5)
-                    Text("收藏常用应用，快速打开")
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.muted)
-                }
+                Text("应用程序")
+                    .font(.system(size: 23, weight: .semibold))
+                    .tracking(-0.5)
                 Spacer()
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -304,7 +299,8 @@ struct ApplicationsView: View {
                 .flowSearchField(theme, focused: searchFocused)
             }
             .padding(.horizontal, 24)
-            .frame(height: 90)
+            .padding(.top, 2)
+            .padding(.bottom, 10)
 
             GeometryReader { proxy in
                 HStack(spacing: 10) {

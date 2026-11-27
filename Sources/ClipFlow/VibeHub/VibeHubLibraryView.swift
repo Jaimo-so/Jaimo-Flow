@@ -13,7 +13,7 @@ struct VibeHubLibraryView: View {
     var body: some View {
         let theme = ClipFlowTheme(scheme: colorScheme)
         VStack(spacing: 0) {
-            header(theme)
+            header
             searchBar(theme)
             categories(theme)
             if library.loadFailed {
@@ -78,13 +78,9 @@ struct VibeHubLibraryView: View {
         .onDisappear { library.flush() }
     }
 
-    private func header(_ theme: ClipFlowTheme) -> some View {
+    private var header: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Vibehub").font(.system(size: 19, weight: .semibold))
-                Text("Vibe Coding 编程话术与术语知识库")
-                    .font(.system(size: 11)).foregroundStyle(theme.muted)
-            }
+            Text("Vibehub").font(.system(size: 19, weight: .semibold))
             Spacer(minLength: 0)
             Button(action: create) { Label("新建话术", systemImage: "plus") }
                 .buttonStyle(GlassButtonStyle(kind: .normal)).fixedSize()
@@ -98,7 +94,8 @@ struct VibeHubLibraryView: View {
                 .accessibilityLabel("Agent 设置").help("Agent 设置")
         }
         .padding(.horizontal, 18)
-        .frame(height: 72)
+        .padding(.top, 2)
+        .padding(.bottom, 10)
     }
 
     private func searchBar(_ theme: ClipFlowTheme) -> some View {

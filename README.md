@@ -25,9 +25,9 @@
 
 Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工具站，并提供位于菜单栏中央的刘海式悬停入口及文件中转功能。首页提供时间、快速便签、多条备忘录、本地录音、镜子和最近应用；应用页集中搜索、收藏并启动本机应用。提示词页管理支持 `{{变量}}` 的通用可复用模板，剪切板页管理临时内容。Vibehub 是面向 Vibe Coding 的编程话术与术语知识库，可通过自己配置的模型 API 辅助分类和补全。
 
-所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件和录音均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
+所有剪切板记录、图片、提示词、便签、备忘录、镜子封面、中转文件、录音和账号额度记录均保存在本机。应用无需账户，不依赖云同步，不包含 Electron 或 AI 运行时；界面和核心能力使用 Swift、SwiftUI、AppKit 与 macOS 系统框架实现，内置终端使用 WebView 呈现。
 
-> 当前版本：`0.12.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
+> 当前版本：`0.13.0`。支持 macOS 13 或更高版本，仅提供 Apple Silicon（M1/M2/M3/M4 及后续芯片）安装包，不提供 Intel（x86_64）版本。
 
 ## 产品展示
 
@@ -56,6 +56,10 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 主动开始录音时才会请求麦克风权限，录音文件保存在本机。镜子可在照片和实时摄像头之间切换，照片按 16:9 或 9:16 居中裁剪，右键可选自动、横向或竖向。可在「偏好设置 → 首页照片」选择本地照片，或联网获取随机照片并保存在本机。点击照片开启摄像头，再次点击实时画面关闭，摄像头画面不录制、不保存、不上传。
 
 产品设计语言记录在 [DESIGN.md](DESIGN.md)。工具站的早期交互和设计演进见 [Jaimo Island 实现契约](docs/archive/jaimo-island-handoff-spec.md)，旧版剪贴板实现和兼容行为见 [ClipFlow 实现契约](docs/archive/clipflow-handoff-spec.md)。[工具站视觉原型](docs/archive/jaimo-island-prototype.html)和[每日复盘原型](docs/archive/daily-review-demo.html)也保存在同一归档目录。
+
+## 0.13.0 版本更新
+
+新增「额度」页面（`⌘7`），采用瀑布流卡片布局统一查看 **Codex CLI**、**Antigravity CLI**、**Gemini CLI**（支持 Google 网页登录与本机 CLI 凭证）与 **DeepSeek** 的多账号剩余额度、余额明细、重置倒计时与历史趋势。新增「偏好设置 → 导航栏与页面」与「首页模块」，支持独立开关全部 7 个顶部页面、切换「图标 + 名称」或「仅图标」以及一键恢复默认。完整变更与安装说明见 [0.13.0 发布说明](docs/releases/v0.13.0.md)。
 
 ## 0.12.0 版本更新
 
@@ -103,7 +107,7 @@ Jaimo Flow 把常用的本机操作收进一个由 `⌥Space` 直接唤起的工
 如需验证下载是否完整，将同一 Release 中的 `.dmg` 与 `.dmg.sha256` 放在同一目录后执行：
 
 ```bash
-shasum -a 256 -c Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg.sha256
+shasum -a 256 -c Jaimo-Flow-0.13.0-macOS-Apple-Silicon.dmg.sha256
 ```
 
 ## 当前能力
@@ -127,6 +131,7 @@ shasum -a 256 -c Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg.sha256
 - 内置独立的本地提示词库，支持分组、搜索、收藏、新建、编辑、删除和使用次数记录
 - Vibehub 独立保存 Vibe Coding 话术，支持笔记式编辑、用途分类、标签、适用场景、术语与含义、搜索、收藏、完整复制和自动保存；首次进入时提供哈希路由示例，并可配置模型 API，让 Agent 整理新话术，先预览修改再手动保存
 - 内置交互式终端，切换页面时保留会话和输出，支持关闭当前会话并重新打开
+- 账号额度页可查询本机 Codex、Antigravity / AGY、Gemini CLI（Google OAuth）和 DeepSeek API 的多个账号配置，按供应商查看剩余额度、余额明细、重置倒计时和历史趋势
 - 可将文字、代码或链接历史保存为提示词；使用 `{{变量名}}` 定义调用时填写的模板变量
 - 长文本预览按片段渐进渲染，首屏只排版开头内容，滚动到底部后继续加载后续片段
 - 连续相同内容按 SHA-256 去重；自身写回剪贴板产生的 change count 会被忽略
@@ -135,7 +140,7 @@ shasum -a 256 -c Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg.sha256
 - 默认排除 1Password、钥匙串访问和终端，可在 `⌘,` 偏好设置中移除
 - 清空历史需要在 8 秒内进行第二次确认
 - 偏好设置的“外观”可选“跟随系统”“白天 · 液态玻璃”或“黑夜 · 控制中心”。主窗与文件小兜同步切换，页面共用顶部胶囊导航，并支持系统“减弱动态效果”
-- 偏好设置的“模块”可独立开关内置终端、录音与转写、镜子，三个模块默认开启
+- 偏好设置的「导航栏与页面」可开关七个顶部页面并选择导航显示方式，「首页模块」可独立开关录音与转写和镜子
 
 ## 使用说明
 
@@ -150,28 +155,44 @@ shasum -a 256 -c Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg.sha256
 - `↵`：复制选中项到系统剪贴板
 - `⌘F`：聚焦搜索
 - `⌘1` / `⌘2` / `⌘3` / `⌘4` / `⌘5`：切换首页 / 应用 / 提示词 / 剪切板 / Vibehub
-- `⌘6` 切换到内置终端，终端模块开启时可用
+- `⌘6`：切换到内置终端，终端模块开启时可用
+- `⌘7`：切换到额度页，账号额度模块开启时可用
+- `⌘R`：在额度页刷新所有已配置账号
 - `⌘N`：新建提示词；在剪切板 API Key 分组中新建 API Key / 密码；在 Vibehub 中新建话术
 - `⌘E`：编辑选中的提示词或 API Key / 密码
 - `⌘S`：切换收藏；在 API Key / 密码编辑界面保存；在 Vibehub 中立即保存话术
 - `⌘⌫`：删除选中项
 - `⌘,`：打开或关闭偏好设置
 - `⌘Q`：退出 Jaimo Flow，结束后台进程
-- `ESC`：先清空搜索，再关闭面板
+- `ESC`：关闭当前的账号编辑器；在支持搜索的页面先清空搜索，再关闭面板
 
 开机自动启动需要应用位于 `/Applications`。在 Jaimo Flow 偏好设置中开启相应选项即可。
 
-### 模块开关
+### 导航栏与页面、首页模块
 
-按 `⌘,` 打开「偏好设置 → 模块」，可独立开关三个模块。三个开关默认开启，变更即时生效，并保存在本机的 `UserDefaults`。
+按 `⌘,` 打开偏好设置。「导航栏与页面」可关闭任意顶部页面，至少保留一个。关闭页面同时停用对应的固定快捷键，当前页关闭后跳到第一个启用页。默认开启全部页面，宽窗口显示图标与名称。可以切换为「仅图标」，悬停查看名称与快捷键。「恢复默认」会恢复全部页面和默认显示方式。
+
+「首页模块」独立控制录音与转写、镜子，两项默认开启。首页隐藏期间保留模块设置。以下开关变更即时生效，并存于本机的 `UserDefaults`。
 
 | 模块 | 偏好键 | 关闭时的行为 |
 | --- | --- | --- |
-| 内置终端 | `module.terminalEnabled` | 隐藏顶部终端入口并停用 `⌘6`。当前页面或启动恢复页为终端时，无动画回到首页。关闭正在运行的会话并释放 WebView；重新打开模块后，首次进入终端再创建新会话。 |
+| 内置终端 | `module.terminalEnabled` | 隐藏顶部终端入口并停用 `⌘6`。当前页面或启动恢复页为终端时，无动画回到第一个启用页。关闭正在运行的会话并释放 WebView；重新打开模块后，首次进入终端再创建新会话。 |
 | 录音与转写 | `module.recordingEnabled` | 从首页隐藏录音组件，结束并保存当前录音，关闭工作台，取消转写并释放播放器。关闭时保存的录音可在重新开启后手动转写。已保存的录音和字幕会保留。 |
 | 镜子 | `module.mirrorEnabled` | 从首页隐藏镜子、从偏好设置隐藏「首页照片」，并立即停止预览和释放摄像头。已保存的封面会保留。 |
+| 账号额度 | `module.quotaEnabled` | 隐藏顶部额度入口并停用 `⌘7`，取消查询并释放额度页面模型。当前页或启动恢复页为额度时无动画回到第一个启用页。已保存的账号配置、快照和历史会保留。 |
 
 关闭录音或镜子时，对应组件也会从「管理组件 → 已隐藏」的恢复入口移除。用户手动设置的组件隐藏状态保存在 `home.hiddenWidgets`。重新开启对应模块后，原先显示的组件回到首页，原先隐藏的组件仍可从「已隐藏」恢复。
+
+### 账号额度
+
+用 `⌘7` 或顶部「额度」进入。初始提供「本机 Codex」和「本机 Antigravity」两个账号，并可通过「添加账号」按需添加 **Gemini CLI（OAuth）** 和 **DeepSeek** 账号；卡片按「Codex CLI」「Antigravity CLI」「Gemini CLI」「DeepSeek」显示供应商。CLI 或 OAuth 返回的账号邮箱会在卡片上突出显示，悬停可查看完整邮箱。打开窗口显示额度页、从其他页面切回，或关闭设置回到额度页时，应用会刷新距上次成功查询已超过 5 分钟的账号。5 分钟以内（含整 5 分钟）直接显示上次结果。没有缓存的账号会在本次应用运行中自动查询一次，已经在查询的账号会继续完成当前请求。你也可以用 `⌘R` 刷新全部账号，或用卡片上的按钮刷新单个账号。查询失败时卡片保留上次成功结果并提供重试。
+
+添加账号时选择供应商并填写显示名称：
+- **Codex CLI / Antigravity CLI**：可选填套餐标签、配置目录（分别对应 `CODEX_HOME` 与 `HOME`）和 CLI 路径，支持同一页管理多个本机登录配置。
+- **Gemini CLI（OAuth）**：默认支持「Google 网页登录」，点击「打开浏览器登录 Google」在默认浏览器完成授权（自动读取本机 `gemini` CLI 或 `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` 环境变量中的 OAuth 客户端配置），授权令牌加密保存在本机 macOS 钥匙串并自动刷新，支持添加多个 Google 账号；也可切换为「本机 CLI 凭证」，读取 `~/.gemini/oauth_creds.json` 或自定义凭证目录/文件。
+- **DeepSeek**：填写 DeepSeek API Key 即可查询官方 `/user/balance` 余额接口，支持多币种总余额与充值/赠金明细，可选填自定义接口地址（远程地址须为 HTTPS，本机服务可用 HTTP）。API Key 保存在本机独立的 macOS 钥匙串服务中，编辑时留空沿用当前密钥，移除账号时同步清理对应密钥。
+
+账号卡片显示剩余百分比、重置时间和额度桶的历史折线，或按币种展示余额明细；CLI 返回余额或重置券数量时也会显示。移除账号会清除本机缓存，可通过筛选栏上的「恢复本机账号」恢复默认配置。
 
 ### 提示词模板库
 
@@ -216,6 +237,8 @@ Jaimo Flow 不自动上传剪贴板内容，不要求应用账户，也没有云
 
 录音转写会将所选录音或其分段发送到用户配置的服务商；自动转写默认开启，配置好服务后完成录音即会发送，可在 ASR 设置中关闭。转写结果保存在本机录音目录，服务商如何处理音频取决于其服务政策。转写 API Key 保存在本机独立的 macOS 钥匙串服务中，接口地址和模型名称保存在本机偏好设置。
 
+账号额度仅在用户让额度页显示且有账号需要首次查询或刷新过期快照，或用户手动刷新时发起网络查询：Codex 和 Antigravity 通过本机 `codex` / `agy` CLI 查询；Gemini CLI 支持通过默认浏览器完成 Google OAuth 网页授权（访问 `accounts.google.com` 与 `oauth2.googleapis.com/token`，令牌加密保存在独立 macOS 钥匙串服务 `com.clipflow.mac.quota`）或读取本机 `oauth_creds.json`，再向 Google Cloud Code Assist 内部额度接口（`cloudcode-pa.googleapis.com`）查询，访问令牌过期时自动刷新并写回对应存储；DeepSeek 使用保存在同一独立钥匙串服务中的 API Key 向 `api.deepseek.com`（或用户配置的接口地址）查询余额。应用将非敏感账号配置、服务返回的账号信息、额度快照与历史样本保存在本机 `Quota/state.json`，API Key 与 Google 网页登录令牌均不写入该文件。
+
 为保证从旧版 ClipFlow 升级后不丢失记录，应用继续使用原有的内部应用标识 `com.clipflow.mac` 和数据目录：
 
 ```text
@@ -225,6 +248,7 @@ Jaimo Flow 不自动上传剪贴板内容，不要求应用账户，也没有云
 ├── Recordings/           # M4A 录音及关联的转写 JSON、TXT
 ├── Memos/memos.json      # 多条备忘录
 ├── VibeHub/phrases.json  # Vibe Coding 话术、分类与笔记
+├── Quota/state.json      # 额度账号配置、快照和历史样本
 ├── Mirror/               # 镜子未打开时显示的封面照片
 └── FileRelay/            # 文件中转副本与索引
 ```
@@ -265,7 +289,7 @@ API Key 分组的内容保存在 macOS 钥匙串中，不写入上述 SQLite 数
 
 构建脚本只使用 Swift Package Manager 和 macOS 系统框架，并在 `build/Jaimo Flow.buildbundle` 生成一个临时签名的应用包。构建产物不直接打开；安装后从 `/Applications/Jaimo Flow.app` 运行，避免出现重复的应用入口。脚本会先验证系统默认 SDK；如果 Command Line Tools 中的 Swift 编译器与默认 SDK 版本不一致，会自动选择机器上已安装的兼容 SDK。SDK 只决定编译时使用的系统接口，最低运行版本仍由 `arm64-apple-macosx13.0` 构建目标决定。
 
-一键运行全部七项开发期自检。脚本只调用一次 `swift build --product ClipFlow`，六项 App 自检复用同一批调试目标文件，核心自检仍由 SwiftPM 运行。任何一项失败都会立即退出并返回非零状态。
+一键运行全部八项开发期自检。脚本只调用一次 `swift build --product ClipFlow`，七项 App 自检复用同一批调试目标文件，核心自检仍由 SwiftPM 运行。任何一项失败都会立即退出并返回非零状态。
 
 ```bash
 ./Scripts/run-all-self-tests.sh
@@ -278,16 +302,19 @@ API Key 分组的内容保存在 macOS 钥匙串中，不写入上述 SQLite 数
 ./Scripts/run-credential-self-test.sh
 ./Scripts/run-memo-self-test.sh
 ./Scripts/run-panel-self-test.sh
+./Scripts/run-quota-self-test.sh
 ./Scripts/run-vibehub-self-test.sh
 ./Scripts/run-vibehub-agent-self-test.sh
 ./Scripts/run-recording-asr-self-test.sh
 ```
 
-六项 App 自检共用 `Scripts/run-app-self-test.sh <TestTargetDir>`。调试目标文件已用当前源码构建时，可设置 `CLIPFLOW_SKIP_APP_BUILD=1` 并直接运行相应的 App 自检脚本，复用目标文件。
+七项 App 自检共用 `Scripts/run-app-self-test.sh <TestTargetDir>`。调试目标文件已用当前源码构建时，可设置 `CLIPFLOW_SKIP_APP_BUILD=1` 并直接运行相应的 App 自检脚本，复用目标文件。
 
 API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完成后删除测试条目，不操作用户保存的密钥。
 
-面板自检覆盖三个模块开关的默认值与持久化、终端导航与快捷键、终端会话和 WebView 释放、录音工作台和播放状态释放、首页及恢复入口过滤、原隐藏偏好保留与重新启用，以及原录音与镜子封面的文件内容保留。
+面板自检覆盖四个模块开关的默认值与持久化、终端与额度的按需加载、导航和快捷键、终端会话和 WebView 释放、重开窗口与离开其他页面或设置后检查额度快照、额度查询取消、录音工作台和播放状态释放、首页及恢复入口过滤、原隐藏偏好保留与重新启用，以及原录音与镜子封面的文件内容保留。
+
+额度自检用临时目录、模拟 CLI、模拟 HTTP 传输和独立临时钥匙串验证 Codex、Antigravity、Gemini OAuth（含令牌刷新与写回）及 DeepSeek 余额的响应解析、执行参数、密钥隔离、并发刷新与取消、错误后保留缓存、历史采样去重与上限、旧数据兼容、重读与账号管理。通过注入时间验证五分钟边界，以及同时存在过期、有效和缺失快照时的逐账号刷新。
 
 备忘录自检验证备忘录与快速便签编辑、停顿和切换记录期间不保存，关闭时保存最新完整内容，保存失败后保留内容并重试，以及创建、重复调用和存储兼容行为。Vibehub 自检验证分类、搜索、长文保存和复制；Agent 自检使用模拟模型响应，验证接口配置、可编辑预览、关闭清空、手动保存和失败重试，不调用真实模型服务。录音转写自检覆盖接口请求与解析、分段、字幕存取及删除联动，使用临时目录和独立偏好，不访问真实录音或钥匙串。
 
@@ -297,7 +324,7 @@ API Key 自检使用独立的临时钥匙串服务标识和测试剪贴板，完
 ./Scripts/package-dmg.sh
 ```
 
-安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.12.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
+安装包名称自动包含 `Resources/Info.plist` 中的当前版本号，例如 `dist/Jaimo-Flow-0.13.0-macOS-Apple-Silicon.dmg`。配套的 `.sha256` 文件用于校验下载文件是否完整。
 
 如果更换了 `Resources/AppLogo.png`，重新生成 macOS 图标：
 

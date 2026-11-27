@@ -19,14 +19,114 @@ func findTerminalWebView(in view: NSView) -> WKWebView? {
     return view.subviews.lazy.compactMap { findTerminalWebView(in: $0) }.first
 }
 
+
+private struct PanelQuotaFetcher: QuotaFetching {
+    func fetchQuota(for account: QuotaAccountConfig) async throws -> QuotaAccountSnapshot {
+        // Leave the request active long enough to verify the model releases it when disabled.
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        throw PanelTestError.failed("面板自检查询等待过久")
+    }
+}
+
+@MainActor
+private func makePanelQuotaMonitor(in directory: URL) -> QuotaMonitorModel {
+    QuotaMonitorModel(fileURL: directory.appendingPathComponent("PanelQuota/state.json"), fetcher: PanelQuotaFetcher())
+}
+
+@MainActor
+func testQuotaPageRefresh(directory: URL) async throws {
+    let suite = "ClipFlowPanelSelfTest.Quota.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(ToolDestination.quota.rawValue, forKey: "island.lastDestination")
+    let preferences = PreferencesStore(defaults: defaults)
+    let app = AppModel(preferences: preferences)
+    let home = HomeDashboardModel(defaults: defaults,
+                                  memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("QuotaPanelMemos.json")),
+                                  recordingsDirectory: directory.appendingPathComponent("QuotaPanelRecordings"),
+                                  dailyReview: DailyReviewModel(fileURL: directory.appendingPathComponent("QuotaPanelReviews.json")),
+                                  mirrorDirectory: directory.appendingPathComponent("QuotaPanelMirror"))
+    home.hide(.recentApplications)
+
+    let url = directory.appendingPathComponent("QuotaPage/state.json")
+    let baseline = Date(timeIntervalSince1970: 1_800_000_000)
+    var now = baseline.addingTimeInterval(299)
+    var state = QuotaPersistedState.empty
+    let accountIDs = Set(state.accounts.map(\.id))
+    for (index, account) in state.accounts.enumerated() {
+        state.snapshots[account.id] = QuotaAccountSnapshot(
+            accountID: account.id, provider: account.provider, accountEmail: nil, planLabel: nil, buckets: [],
+            resetCreditsCount: nil, creditBalance: nil, fetchedAt: baseline.addingTimeInterval(Double(index))
+        )
+    }
+    try JSONFileStore<QuotaPersistedState>(fileURL: url).save(state)
+    let controller = PanelController(model: app, preferences: preferences, homeModel: home,
+                                     quotaMonitorFactory: { QuotaMonitorModel(fileURL: url, fetcher: PanelQuotaFetcher(), now: { now }) })
+    let shell = controller.shellModel
+    defer {
+        _ = controller.prepareForTermination()
+        controller.hide()
+        finishWindowAnimation(controller.panel)
+    }
+
+    try require(shell.destination == .quota && !shell.isQuotaMonitorLoaded, "恢复额度页时在后台加载了模型")
+    controller.showExpanded(openSettings: true)
+    try require(!shell.isQuotaMonitorLoaded, "直接打开设置时加载了额度模型")
+    try await Task.sleep(nanoseconds: 150_000_000)
+    app.settingsOpen = false
+    let loadDeadline = Date().addingTimeInterval(2)
+    while !shell.isQuotaMonitorLoaded && Date() < loadDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
+    guard let monitor = shell.quotaMonitor else { throw PanelTestError.failed("关闭设置后未加载额度页") }
+    try require(!monitor.isRefreshing && monitor.snapshots == state.snapshots, "首次显示未满五分钟的额度页时触发了查询")
+
+    controller.hide()
+    now = baseline.addingTimeInterval(300)
+    controller.showExpanded()
+    try require(!monitor.isRefreshing, "重新打开恰好五分钟的额度快照时触发了查询")
+    controller.hide()
+    now = baseline.addingTimeInterval(301)
+    try require(!monitor.isRefreshing, "额度页隐藏时触发了过期查询")
+    controller.showExpanded()
+    try require(shell.quotaMonitor === monitor && monitor.refreshingAccountIDs == [state.accounts[0].id],
+                "重新打开额度页时没有只查询超过五分钟的账号")
+
+    controller.showExpanded(destination: .home)
+    monitor.cancelAll()
+    now = baseline.addingTimeInterval(302)
+    controller.hide()
+    controller.showExpanded(destination: .applications)
+    try require(!monitor.isRefreshing, "打开其他页面时查询了过期额度")
+    controller.showExpanded(destination: .quota)
+    try require(monitor.refreshingAccountIDs == accountIDs, "切回额度页时未查询过期账号")
+
+    controller.showExpanded(openSettings: true)
+    monitor.cancelAll()
+    controller.showExpanded(openSettings: true)
+    try require(!monitor.isRefreshing, "设置打开时查询了已加载的过期额度")
+    try await Task.sleep(nanoseconds: 150_000_000)
+    app.settingsOpen = false
+    let refreshDeadline = Date().addingTimeInterval(2)
+    while !monitor.isRefreshing && Date() < refreshDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
+    try require(monitor.refreshingAccountIDs == accountIDs, "关闭设置返回额度页时未刷新过期快照")
+
+    preferences.quotaEnabled = false
+    try require(shell.destination == .home && !shell.isQuotaMonitorLoaded && !monitor.isRefreshing,
+                "禁用额度模块后未回到首页、释放模型或取消查询")
+    preferences.quotaEnabled = true
+    try require(!shell.isQuotaMonitorLoaded, "重新启用额度模块时在首页加载了模型")
+    controller.showExpanded(destination: .quota)
+    try require(shell.quotaMonitor !== monitor && shell.quotaMonitor?.refreshingAccountIDs == accountIDs,
+                "重新启用后进入额度页时未查询磁盘中过期的快照")
+}
+
 @MainActor
 func testModulePreferences(directory: URL) async throws {
     let suite = "ClipFlowPanelSelfTest.Modules.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let preferences = PreferencesStore(defaults: defaults)
-    try require(preferences.terminalEnabled && preferences.recordingEnabled && preferences.mirrorEnabled,
-                "新用户及无模块偏好的旧用户应默认启用三个模块")
+    try require(preferences.terminalEnabled && preferences.recordingEnabled && preferences.mirrorEnabled
+                && preferences.quotaEnabled, "新用户及无模块偏好的旧用户应默认启用四个模块")
 
     let recordings = directory.appendingPathComponent("ModuleRecordings")
     try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
@@ -49,7 +149,8 @@ func testModulePreferences(directory: URL) async throws {
                                   dailyReview: dailyReview, mirrorDirectory: mirror)
     home.hide(.recentApplications)
     let app = AppModel(preferences: preferences)
-    let controller = PanelController(model: app, preferences: preferences, homeModel: home)
+    let controller = PanelController(model: app, preferences: preferences, homeModel: home,
+                                     quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     defer {
         controller.hide()
         finishWindowAnimation(controller.panel)
@@ -58,6 +159,59 @@ func testModulePreferences(directory: URL) async throws {
     try require(shell.availableDestinations == ToolDestination.allCases, "模块默认开启时应保留所有导航")
     try require(home.visibleWidgets.contains(.camera) && home.visibleWidgets.contains(.audioRecorder),
                 "镜子与录音应按默认组件布局显示")
+
+    func press(_ code: Int, _ key: String, modifiers: NSEvent.ModifierFlags = .command) throws {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: controller.panel.windowNumber, context: nil,
+                                           characters: key, charactersIgnoringModifiers: key, isARepeat: false,
+                                           keyCode: UInt16(code)) else {
+            throw PanelTestError.failed("无法构造额度快捷键事件")
+        }
+        NSApp.sendEvent(event)
+    }
+
+    try require(!shell.isQuotaMonitorLoaded, "创建面板时提前加载额度")
+    controller.showExpanded(destination: .applications)
+    try require(!shell.isQuotaMonitorLoaded, "进入应用页时提前加载额度")
+    try press(kVK_ANSI_7, "7")
+    guard let retiredQuota = shell.quotaMonitor else { throw PanelTestError.failed("⌘7 未加载额度模块") }
+    try require(shell.destination == .quota && retiredQuota.refreshingAccountIDs.count == 2,
+                "首次进入额度页未并发查询默认账号")
+    retiredQuota.beginAddAccount()
+    controller.handleOutsideClick()
+    try require(shell.isQuotaModalOpen && controller.isVisible, "账号编辑打开时外部点击收起了面板")
+    try press(kVK_Escape, "\u{1b}", modifiers: [])
+    try require(!shell.isQuotaModalOpen && controller.isVisible, "Escape 未先关闭账号编辑")
+    retiredQuota.beginAddAccount()
+
+    preferences.quotaEnabled = false
+    try require(shell.destination == .home && !shell.availableDestinations.contains(.quota)
+                && !shell.isQuotaMonitorLoaded && !retiredQuota.isRefreshing && !retiredQuota.editorOpen,
+                "关闭额度后未回落首页、取消查询或释放编辑器与模型")
+    try require(defaults.string(forKey: "island.lastDestination") == ToolDestination.home.rawValue
+                && !defaults.bool(forKey: "module.quotaEnabled"), "额度开关或回落页未持久化")
+    try press(kVK_ANSI_7, "7")
+    try require(shell.destination == .home && !shell.isQuotaMonitorLoaded, "禁用后 ⌘7 仍打开额度页")
+
+    defaults.set(ToolDestination.quota.rawValue, forKey: "island.lastDestination")
+    let quotaDisabledShell = IslandShellModel(preferences: PreferencesStore(defaults: defaults),
+                                              quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
+    quotaDisabledShell.activateQuotaIfSelected()
+    try require(quotaDisabledShell.destination == .home && !quotaDisabledShell.isQuotaMonitorLoaded
+                && defaults.string(forKey: "island.lastDestination") == ToolDestination.home.rawValue,
+                "启动时恢复被禁用的额度页面没有回落到首页")
+
+    preferences.quotaEnabled = true
+    try require(PreferencesStore(defaults: defaults).quotaEnabled && shell.availableDestinations.contains(.quota)
+                && !shell.isQuotaMonitorLoaded, "重新开启额度未恢复入口或提前加载模型")
+    try press(kVK_ANSI_7, "7")
+    guard let reopenedQuota = shell.quotaMonitor else { throw PanelTestError.failed("重新开启额度后 ⌘7 未加载模型") }
+    try require(shell.destination == .quota && reopenedQuota !== retiredQuota && !reopenedQuota.isRefreshing,
+                "重新开启额度复用了旧模型或同一会话重复自动查询")
+    try press(kVK_ANSI_R, "r")
+    try require(reopenedQuota.refreshingAccountIDs.count == 2, "⌘R 未刷新额度")
+    try require(controller.prepareForTermination() && !reopenedQuota.isRefreshing, "退出时未取消额度查询")
 
     controller.showExpanded(destination: .terminal)
     try await Task.sleep(nanoseconds: 150_000_000)
@@ -89,7 +243,8 @@ func testModulePreferences(directory: URL) async throws {
     try require(shell.destination == .home && !shell.isTerminalSessionLoaded, "禁用后 ⌘6 仍打开终端")
 
     defaults.set(ToolDestination.terminal.rawValue, forKey: "island.lastDestination")
-    let restoredShell = IslandShellModel(preferences: PreferencesStore(defaults: defaults))
+    let restoredShell = IslandShellModel(preferences: PreferencesStore(defaults: defaults),
+                                         quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     restoredShell.activateTerminalIfSelected()
     try require(restoredShell.destination == .home && !restoredShell.isTerminalSessionLoaded
                 && defaults.string(forKey: "island.lastDestination") == ToolDestination.home.rawValue,
@@ -130,7 +285,8 @@ func testModulePreferences(directory: URL) async throws {
                 "三个模块开关的关闭状态未通过指定键持久化")
     let disabledHome = HomeDashboardModel(defaults: defaults, memoLibrary: memoLibrary, recordingsDirectory: recordings,
                                           dailyReview: dailyReview, mirrorDirectory: mirror)
-    let disabledController = PanelController(model: AppModel(preferences: disabled), preferences: disabled, homeModel: disabledHome)
+    let disabledController = PanelController(model: AppModel(preferences: disabled), preferences: disabled, homeModel: disabledHome,
+                                             quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     try require(!disabledController.shellModel.availableDestinations.contains(.terminal)
                 && !disabledHome.visibleWidgets.contains(.audioRecorder) && !disabledHome.visibleWidgets.contains(.camera),
                 "新面板没有应用已持久化的关闭状态")
@@ -245,7 +401,8 @@ func testLibraryShortcuts(directory: URL) async throws {
     let model = AppModel(preferences: preferences, credentialStore: credentials, store: store)
     model.clipboardMonitor = ClipboardMonitor(pasteboard: pasteboard)
     let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("ShortcutMemos.json")))
-    let controller = PanelController(model: model, preferences: preferences, homeModel: home)
+    let controller = PanelController(model: model, preferences: preferences, homeModel: home,
+                                     quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     defer {
         controller.hide()
         finishWindowAnimation(controller.panel)
@@ -628,17 +785,80 @@ func runTests() async throws {
     let home = HomeDashboardModel(defaults: defaults, memoLibrary: MemoLibraryModel(fileURL: memoURL), recordingsDirectory: recordings)
     home.hide(.recentApplications)
     let appModel = AppModel(preferences: preferences)
-    let controller = PanelController(model: appModel, preferences: preferences, homeModel: home)
+    let controller = PanelController(model: appModel, preferences: preferences, homeModel: home,
+                                     quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     defer { controller.panel.orderOut(nil) }
 
-    try require(!controller.hasEventMonitors && !controller.shellModel.isTerminalSessionLoaded && !home.isRecordingTranscriptionLoaded,
-                "创建隐藏面板时提前注册监听或初始化终端、录音转写")
+    let destinations = ToolDestination.allCases
+    try require(preferences.enabledDestinations == destinations && preferences.navigationDisplayStyle == .iconAndTitle,
+                "默认应开启七页并显示图标与名称")
+    try require(!NavigationDisplayStyle.iconOnly.showsLabels(width: 1200, destinationCount: 7)
+                && !NavigationDisplayStyle.iconAndTitle.showsLabels(width: 779, destinationCount: 7)
+                && NavigationDisplayStyle.iconAndTitle.showsLabels(width: 780, destinationCount: 7)
+                && !NavigationDisplayStyle.iconAndTitle.showsLabels(width: 759, destinationCount: 6)
+                && NavigationDisplayStyle.iconAndTitle.showsLabels(width: 760, destinationCount: 6),
+                "导航样式或宽度边界不正确")
+    preferences.navigationDisplayStyle = .iconOnly
+    try require(PreferencesStore(defaults: defaults).navigationDisplayStyle == .iconOnly, "显示方式未持久化")
+    for (offset, destination) in destinations.enumerated() {
+        controller.shellModel.selectDestination(destination)
+        preferences.setDestinationEnabled(false, for: destination)
+        let remaining = destinations.filter { $0 != destination }
+        try require(PreferencesStore(defaults: defaults).enabledDestinations == remaining, "页面开关未独立持久化")
+        try require(controller.shellModel.destination == remaining[0], "当前页关闭后没有回到首个启用页")
+        defaults.set(destination.rawValue, forKey: "island.lastDestination")
+        let restoredShell = IslandShellModel(preferences: preferences)
+        try require(restoredShell.destination == remaining[0]
+                    && defaults.string(forKey: "island.lastDestination") == remaining[0].rawValue,
+                    "启动没有回落并写回首个启用页")
+        for (index, page) in destinations.enumerated() {
+            try require(controller.destinationForShortcut(String(index + 1)) == (index == offset ? nil : page),
+                        "关闭页面后快捷键仍然有效，或启用页面的键位变化")
+        }
+        preferences.setDestinationEnabled(true, for: destination)
+    }
+    for last in destinations {
+        preferences.resetNavigationPreferences()
+        for destination in destinations where destination != last {
+            preferences.setDestinationEnabled(false, for: destination)
+        }
+        preferences.setDestinationEnabled(false, for: last)
+        if last == .terminal { preferences.terminalEnabled = false }
+        if last == .quota { preferences.quotaEnabled = false }
+        try require(!preferences.canDisableDestination(last) && preferences.enabledDestinations == [last]
+                    && PreferencesStore(defaults: defaults).enabledDestinations == [last],
+                    "最后一个页面可被关闭或拒绝后的状态未持久化")
+    }
+    for destination in destinations {
+        let key: String
+        switch destination {
+        case .terminal: key = "module.terminalEnabled"
+        case .quota: key = "module.quotaEnabled"
+        default: key = "navigation.\(destination.rawValue)Enabled"
+        }
+        defaults.set(false, forKey: key)
+    }
+    defaults.set("invalid", forKey: "navigation.displayStyle")
+    let repaired = PreferencesStore(defaults: defaults)
+    try require(repaired.enabledDestinations == [.home] && defaults.bool(forKey: "navigation.homeEnabled")
+                && repaired.navigationDisplayStyle == .iconAndTitle, "无有效页面或显示方式时没有恢复")
+    preferences.navigationDisplayStyle = .iconOnly
+    preferences.resetNavigationPreferences()
+    let reset = PreferencesStore(defaults: defaults)
+    try require(reset.enabledDestinations == destinations && reset.navigationDisplayStyle == .iconAndTitle,
+                "恢复默认没有更新全部页面及显示方式")
+    controller.shellModel.selectDestination(.home)
+
+    try require(!controller.hasEventMonitors && !controller.shellModel.isTerminalSessionLoaded
+                && !controller.shellModel.isQuotaMonitorLoaded && !home.isRecordingTranscriptionLoaded,
+                "创建隐藏面板时提前注册监听或初始化终端、账号额度、录音转写")
     try require(!controller.shellModel.isTerminalChoosingFolder, "未打开的终端不应处于选文件夹状态")
     home.audioRecorder.onDidFinishRecording?(latestRecording)
     try require(!home.isRecordingTranscriptionLoaded, "未配置自动转写时完成录音提前初始化转写管理器")
 
     controller.showExpanded()
     try require(controller.hasEventMonitors, "展开后未注册事件监听")
+    try require(!controller.shellModel.isQuotaMonitorLoaded, "展开首页时提前初始化账号额度")
     try require(!controller.applicationsModel.isLoading && controller.applicationsModel.applications.isEmpty,
                 "隐藏最近使用组件后展开首页仍扫描了应用目录")
     try require(controller.panel.contentView?.layer?.cornerRadius == 30, "窗口外壳与玻璃圆角不一致")
@@ -696,7 +916,8 @@ func runTests() async throws {
             memoLibrary: MemoLibraryModel(fileURL: directory.appendingPathComponent("Memos/reopened.json")),
             recordingsDirectory: recordings
         )
-        let reopened = PanelController(model: AppModel(preferences: restored), preferences: restored, homeModel: reopenedHome)
+        let reopened = PanelController(model: AppModel(preferences: restored), preferences: restored, homeModel: reopenedHome,
+                                       quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
         defer {
             reopened.hide()
             reopened.panel.orderOut(nil)
@@ -842,7 +1063,8 @@ func runTests() async throws {
     defaults.set(ToolDestination.terminal.rawValue, forKey: "island.lastDestination")
     let restoredHome = HomeDashboardModel(defaults: defaults, memoLibrary: home.memoLibrary, recordingsDirectory: recordings)
     let restoredAppModel = AppModel(preferences: preferences)
-    let restoredController = PanelController(model: restoredAppModel, preferences: preferences, homeModel: restoredHome)
+    let restoredController = PanelController(model: restoredAppModel, preferences: preferences, homeModel: restoredHome,
+                                             quotaMonitorFactory: { makePanelQuotaMonitor(in: directory) })
     defer { restoredController.panel.orderOut(nil) }
     restoredController.panel.contentView?.layoutSubtreeIfNeeded()
     try require(restoredController.shellModel.destination == .terminal && !restoredController.shellModel.isTerminalSessionLoaded,
@@ -869,9 +1091,10 @@ func runTests() async throws {
 
     try await testClipboardIncrementalUpdates(preferences: preferences, directory: directory)
     try await testLibraryShortcuts(directory: directory)
+    try await testQuotaPageRefresh(directory: directory)
     try await testModulePreferences(directory: directory)
     try require(UserDefaults.standard.string(forKey: "island.lastDestination") == standardDestinationBefore, "面板自检污染了用户默认偏好 island.lastDestination")
-    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放；主窗与小兜双主题及跟随系统；按需加载、监听生命周期、剪贴板增量一致性、资料库快捷键与保存转页；模块开关、导航回落、资源释放与首页布局保留")
+    print("PASS: 刘海几何与多屏定位；悬停开关、防误触、移入内容区、快速重开、中转面板；笔记保存与中文输入；窗口缩放；主窗与小兜双主题及跟随系统；按需加载、监听生命周期、额度页显示时刷新过期快照、剪贴板增量一致性、资料库快捷键与保存转页；模块开关、导航回落、资源释放与首页布局保留")
 }
 
 try await runTests()
